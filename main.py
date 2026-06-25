@@ -133,7 +133,7 @@ def main() -> None:
         action="store_true",
         help="Пропустить синхронизацию БД",
     )
-    args = parser.parse_known_args()[0]
+    args = parser.parse_args()
 
     # Настройка логирования
     api.utils.logger.setup_logging(
