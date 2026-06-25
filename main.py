@@ -23,7 +23,7 @@ def main(
     """Запускает фоновые задачи синхронизации, аналитики и/или вотчера лотов.
 
     По умолчанию выполняет синхронизацию каталога и загрузку аналитики.
-    --lots запускает вотчер активных лотов параллельно с аналитикой.
+    --lots  запускает вотчер активных лотов параллельно с аналитикой.
     --force принудительно синхронизирует каталог, даже если уже было сегодня.
     """
     api.utils.logger.setup_logging(
@@ -33,7 +33,6 @@ def main(
     log = api.utils.logger.get_logger(__name__)
     log.info("Запуск STALCRAFT Auction Bot")
 
-    # #11: трекер-сервер стартует вместе с ботом
     _start_tracker_server()
 
     if run_fetch:
@@ -54,23 +53,50 @@ def main(
 async def _run_analysis_and_lots() -> None:
     """Запускает fetcher_anal и lots_watcher параллельно с общим соединением.
 
-    Ключевое ограничение sqlite3: объект Connection *не* потокобезопасен,
-    но в рамках одного asyncio event-loop его можно безопасно разделить
-    между корутинами при условии, что все пишущие операции сериализованы
-    через asyncio.Lock. Именно это делает общий db_lock.
+    FIX #3 (asyncio.Lock + db_lock):
+        Ключевое ограничение sqlite3: объект Connection *не* потокобезопасен,
+        но в рамках одного asyncio event-loop его можно безопасно разделить
+        между корутинами при условии, что ВСЕ операции с БД (execute, commit)
+        выполняются внутри `async with db_lock`.
 
-    Использование одного Connection вместо двух устраняет гонку на
-    WAL-чекпоинте (OperationalError: database is locked), которая
-    возникает при одновременном conn.commit() из двух разных объектов
-    Connection к одному файлу.
+        Ранее db_lock создавался здесь и передавался в корутины, но не было
+        никакой гарантии, что fetcher_anal и lots_watcher действительно
+        его используют — достаточно одного незащищённого commit() чтобы
+        получить OperationalError: database is locked или повреждение WAL.
+
+        Теперь db_lock обязателен для всех операций с conn.  Корутины
+        fetcher_anal.setup_analysis и run_lots_watcher должны принимать
+        db_lock и использовать `async with db_lock` вокруг КАЖДОГО
+        conn.execute() / conn.commit().  Если ваша версия этих функций
+        не поддерживает db_lock — не передавайте один Connection,
+        а откройте для каждой корутины отдельное соединение (WAL позволяет
+        это сделать безопасно) либо используйте aiosqlite.
+
+        Здесь мы явно проверяем сигнатуру и при несовместимости выдаём
+        понятную ошибку вместо молчаливого повреждения данных.
     """
-    import asyncio
+    import inspect
     from api.fetcher_lots import run_lots_watcher
     from db.connection import open_connection
     from config import settings as _settings
 
     db_lock = asyncio.Lock()
     conn    = open_connection(_settings.db_path)
+
+    # Проверяем, что корутины принимают db_lock (защита от молчаливого пропуска)
+    for fn, name in [
+        (api.fetcher_anal.setup_analysis, "fetcher_anal.setup_analysis"),
+        (run_lots_watcher,                "fetcher_lots.run_lots_watcher"),
+    ]:
+        sig = inspect.signature(fn)
+        if "db_lock" not in sig.parameters:
+            raise RuntimeError(
+                f"{name} не принимает db_lock — невозможно гарантировать "
+                "сериализацию записей в БД.  Добавьте параметр db_lock "
+                "и оберните все conn.execute()/conn.commit() в "
+                "`async with db_lock`."
+            )
+
     try:
         await asyncio.gather(
             api.fetcher_anal.setup_analysis(conn=conn, db_lock=db_lock),

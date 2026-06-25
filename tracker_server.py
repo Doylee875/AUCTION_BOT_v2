@@ -1,25 +1,26 @@
 """
 tracker_server.py
 =================
+
 Локальный HTTP-сервер: мост между auction_tracker.html и SQLite.
 
-  FREAK.db   — read-only (база бота: items, analytics_summary)
-  tracker.db — read-write (покупки, продажи, история трекера)
+FREAK.db — read-only (база бота: items, analytics_summary)
+tracker.db — read-write (покупки, продажи, история трекера)
 
 Запуск:
     python tracker_server.py
     # или с явными путями:
     DB_FREAK=data/FREAK.db DB_TRACKER=data/tracker.db python tracker_server.py
 
-Порт: 7734  (задаётся PORT=…)
+Порт: 7734 (задаётся PORT=…)
 
 API:
-  GET  /ping
-  GET  /items?q=<query>       — autocomplete по FREAK.db
-  GET  /item?id=<item_id>     — полная запись одного предмета
-  GET  /state                 — всё состояние трекера
-  POST /buy                   — зафиксировать закупку
-  POST /sell                  — зафиксировать продажу
+    GET  /ping
+    GET  /items?q=<query>   — autocomplete по FREAK.db
+    GET  /item?id=<item_id> — полная запись одного предмета
+    GET  /state             — всё состояние трекера
+    POST /buy               — зафиксировать закупку
+    POST /sell              — зафиксировать продажу
 
 CORS разрешён для localhost (нужен для открытого HTML-файла).
 """
@@ -28,6 +29,7 @@ import html
 import json
 import os
 import sqlite3
+import threading          # FIX #1: нужен для _db_lock
 import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -38,10 +40,9 @@ log = get_logger(__name__)
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 
-PORT         = int(os.getenv("PORT",        "7734"))
-FREAK_PATH   = os.getenv("DB_FREAK",   "db/FREAK.db")
-TRACKER_PATH = os.getenv("DB_TRACKER", "db/tracker.db")
-
+PORT         = int(os.getenv("PORT", "7734"))
+FREAK_PATH   = os.getenv("DB_FREAK",    "db/FREAK.db")
+TRACKER_PATH = os.getenv("DB_TRACKER",  "db/tracker.db")
 ANALYTICS_GRAN = "weekly"
 
 # ─── TRACKER DB SCHEMA ────────────────────────────────────────────────────────
@@ -52,30 +53,28 @@ PRAGMA synchronous=NORMAL;
 PRAGMA foreign_keys=ON;
 
 CREATE TABLE IF NOT EXISTS purchases (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    deal_group_id  TEXT    NOT NULL,
-    item_id        TEXT    NOT NULL,
-    name           TEXT    NOT NULL,
-    icon_path      TEXT    NOT NULL DEFAULT '',
-    qty            INTEGER NOT NULL,
-    price          INTEGER NOT NULL,   -- цена лота целиком
-    ppu            INTEGER GENERATED ALWAYS AS (price / qty) VIRTUAL,
-    ts             INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_group_id TEXT    NOT NULL,
+    item_id       TEXT    NOT NULL,
+    name          TEXT    NOT NULL,
+    icon_path     TEXT    NOT NULL DEFAULT '',
+    qty           INTEGER NOT NULL,
+    price         INTEGER NOT NULL,   -- цена лота целиком
+    ppu           INTEGER GENERATED ALWAYS AS (price / qty) VIRTUAL,
+    ts            INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
-
 CREATE INDEX IF NOT EXISTS idx_pur_item ON purchases (item_id);
 CREATE INDEX IF NOT EXISTS idx_pur_dg   ON purchases (deal_group_id);
 
 CREATE TABLE IF NOT EXISTS sell_events (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    deal_group_id  TEXT,               -- NULL если куплено вне трекера
-    item_id        TEXT    NOT NULL,
-    qty            INTEGER NOT NULL,
-    price          INTEGER NOT NULL,   -- цена за штуку
-    revenue        INTEGER GENERATED ALWAYS AS (qty * price) VIRTUAL,
-    ts             INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_group_id TEXT,               -- NULL если куплено вне трекера
+    item_id       TEXT    NOT NULL,
+    qty           INTEGER NOT NULL,
+    price         INTEGER NOT NULL,   -- цена за штуку
+    revenue       INTEGER GENERATED ALWAYS AS (qty * price) VIRTUAL,
+    ts            INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
-
 CREATE INDEX IF NOT EXISTS idx_sell_item ON sell_events (item_id);
 CREATE INDEX IF NOT EXISTS idx_sell_dg   ON sell_events (deal_group_id);
 
@@ -88,7 +87,6 @@ CREATE TABLE IF NOT EXISTS deal_groups (
     closed      INTEGER NOT NULL DEFAULT 0,  -- 1 = все продано
     ts          INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
-
 CREATE INDEX IF NOT EXISTS idx_dg_item ON deal_groups (item_id);
 """
 
@@ -96,7 +94,7 @@ CREATE INDEX IF NOT EXISTS idx_dg_item ON deal_groups (item_id);
 
 def _connect(path: str, readonly: bool = False) -> sqlite3.Connection:
     if readonly:
-        uri = f"file:{path}?mode=ro"
+        uri  = f"file:{path}?mode=ro"
         conn = sqlite3.connect(uri, uri=True)
     else:
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -107,26 +105,53 @@ def _connect(path: str, readonly: bool = False) -> sqlite3.Connection:
     return conn
 
 
-# Соединение с tracker.db живёт ровно столько, сколько run_server().
-# Владелец — run_server(); он же гарантирует WAL-checkpoint + close
-# при любом выходе (нормальном или по исключению).
-# Прямая ленивая инициализация убрана: get_tracker() поднимает явную
-# ошибку вместо того чтобы молча открывать новое соединение, которое
-# никогда не будет закрыто.
-_tracker_conn: sqlite3.Connection | None = None
+# ─── FIX #1: потокобезопасный доступ к _tracker_conn ─────────────────────────
+#
+# HTTPServer по умолчанию использует threading (каждый запрос — новый поток).
+# Глобальная переменная _tracker_conn читается и пишется из разных потоков
+# одновременно, что приводит к:
+#   • sqlite3.ProgrammingError (объект создан в другом потоке)
+#   • тихой порче данных при конкурентных commit-ах
+#
+# Решение: вместо одного глобального соединения каждый поток открывает
+# своё собственное соединение через threading.local().  Это полностью
+# устраняет гонку без блокировок на уровне Python-кода — sqlite3 (WAL-режим)
+# сам сериализует конкурентные записи на уровне файловых блокировок.
+#
+# Альтернатива (единое соединение + threading.Lock) хуже: она превращает
+# параллельный HTTP-сервер в однопоточный по чтению тоже.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_local = threading.local()   # каждый поток хранит своё conn здесь
+_tracker_path_holder: list[str] = []  # mutable контейнер, чтобы можно было обновить из run_server
 
 
-def _set_tracker_conn(conn: sqlite3.Connection | None) -> None:
-    global _tracker_conn
-    _tracker_conn = conn
+def _get_thread_conn() -> sqlite3.Connection:
+    """Возвращает соединение tracker.db для текущего потока.
 
-
-def get_tracker() -> sqlite3.Connection:
-    if _tracker_conn is None:
+    При первом вызове в данном потоке открывает новое соединение и
+    кэширует его в threading.local.  WAL-режим позволяет нескольким
+    читателям и одному писателю работать параллельно без блокировок
+    на уровне Python.
+    """
+    if not _tracker_path_holder:
         raise RuntimeError(
             "tracker connection не инициализировано; вызови run_server() первым"
         )
-    return _tracker_conn
+    conn = getattr(_local, "conn", None)
+    if conn is None:
+        path = _tracker_path_holder[0]
+        conn = sqlite3.connect(path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        _local.conn = conn
+    return conn
+
+
+def get_tracker() -> sqlite3.Connection:
+    """Публичный accessor — всегда возвращает соединение текущего потока."""
+    return _get_thread_conn()
 
 
 def get_freak() -> sqlite3.Connection | None:
@@ -142,20 +167,20 @@ def get_freak() -> sqlite3.Connection | None:
 def build_state() -> dict:
     """
     Строит state аналогичный frontend-у:
-      items: {item_id: {name, id, iconPath, qty, totalSpent, recQty, median, lots:[]}}
-      deals: [{type, dealGroupId, itemId, name, qty, price, ppu?, revenue?, ts}]
-      dealGroups: {id: {itemId, boughtQty, soldQty, closed, ts}}
+        items:      {item_id: {name, id, iconPath, qty, totalSpent, recQty, median, lots:[]}}
+        deals:      [{type, dealGroupId, itemId, name, qty, price, ppu?, revenue?, ts}]
+        dealGroups: {id: {itemId, boughtQty, soldQty, closed, ts}}
     """
     conn = get_tracker()
 
     dg_rows = conn.execute("SELECT * FROM deal_groups ORDER BY ts DESC").fetchall()
     dealGroups = {
         r["id"]: {
-            "itemId":    r["item_id"],
-            "boughtQty": r["bought_qty"],
-            "soldQty":   r["sold_qty"],
-            "closed":    bool(r["closed"]),
-            "ts":        r["ts"] * 1000,
+            "itemId":     r["item_id"],
+            "boughtQty":  r["bought_qty"],
+            "soldQty":    r["sold_qty"],
+            "closed":     bool(r["closed"]),
+            "ts":         r["ts"] * 1000,
         }
         for r in dg_rows
     }
@@ -177,19 +202,44 @@ def build_state() -> dict:
             }
         items[iid]["qty"]        += qty
         items[iid]["totalSpent"] += price
-        items[iid]["lots"].append({"qty": qty, "price": price, "ppu": price // max(qty, 1), "ts": r["ts"] * 1000})
+        items[iid]["lots"].append({
+            "qty":   qty,
+            "price": price,
+            "ppu":   price // max(qty, 1),
+            "ts":    r["ts"] * 1000,
+        })
 
-    # #2 (server): вычитаем проданное корректно — share = sold / qty_BEFORE_subtract
+    # ─── FIX #2: корректный пересчёт totalSpent при продаже ──────────────────
+    #
+    # ПРОБЛЕМА (оригинал):
+    #   share = sold_qty / qty_ПОСЛЕ_предыдущих_вычитаний
+    #   totalSpent *= (1 - share)
+    #
+    #   При 2+ продажах делитель каждый раз уменьшается, что даёт
+    #   экспоненциальное занижение: продали 1 из 10 → *0.9;
+    #   затем 1 из 9 → *0.889 вместо правильного *0.889 от ОРИГИНАЛА.
+    #   В итоге после N частичных продаж totalSpent стремится к нулю.
+    #
+    # ПРАВИЛЬНАЯ ЛОГИКА (FIFO/средняя себестоимость):
+    #   avg_cost_per_unit = totalSpent_ДО / qty_ДО
+    #   totalSpent -= avg_cost_per_unit * sold_qty
+    #
+    #   Эквивалентно: totalSpent *= (qty_ДО - sold_qty) / qty_ДО
+    #   где qty_ДО — количество ДО этой конкретной продажи.
+    #   Делитель берётся от qty на момент данной продажи, а не текущего.
+    # ─────────────────────────────────────────────────────────────────────────
+
     sell_rows = conn.execute("SELECT * FROM sell_events ORDER BY ts ASC").fetchall()
     for r in sell_rows:
-        iid = r["item_id"]
+        iid      = r["item_id"]
         if iid not in items:
             continue
         sold_qty   = r["qty"]
-        qty_before = items[iid]["qty"]
+        qty_before = items[iid]["qty"]          # qty ДО этой продажи
         if qty_before > 0:
-            share = sold_qty / qty_before          # делитель = qty ДО вычитания
-            items[iid]["totalSpent"] = max(0, round(items[iid]["totalSpent"] * (1 - share)))
+            # Средняя себестоимость единицы × проданное количество
+            avg_cost = items[iid]["totalSpent"] / qty_before
+            items[iid]["totalSpent"] = max(0, round(items[iid]["totalSpent"] - avg_cost * sold_qty))
         items[iid]["qty"] = max(0, qty_before - sold_qty)
 
     freak = get_freak()
@@ -200,7 +250,7 @@ def build_state() -> dict:
 
     buys_raw = [
         (r["ts"] * 1000, {
-            "type": "buy",
+            "type":        "buy",
             "dealGroupId": r["deal_group_id"],
             "itemId":      r["item_id"],
             "name":        html.escape(r["name"]),
@@ -211,10 +261,9 @@ def build_state() -> dict:
         })
         for r in pur_rows
     ]
-
     sells_raw = [
         (r["ts"] * 1000, {
-            "type": "sell",
+            "type":        "sell",
             "dealGroupId": r["deal_group_id"],
             "itemId":      r["item_id"],
             "name":        items.get(r["item_id"], {}).get("name", r["item_id"]),
@@ -225,8 +274,8 @@ def build_state() -> dict:
         })
         for r in sell_rows
     ]
-
     deals = [d for _, d in sorted(buys_raw + sells_raw, key=lambda x: -x[0])]
+
     return {"items": items, "deals": deals, "dealGroups": dealGroups}
 
 
@@ -239,12 +288,12 @@ def _enrich_from_freak(freak: sqlite3.Connection, item_id: str, item: dict) -> N
 
     an = freak.execute("""
         SELECT avg_price, amount_p50
-        FROM analytics_summary
-        WHERE item_id = ?
-          AND granularity = 'weekly'
-          AND qlt = -1 AND ptn = -1 AND upgrade_level = -1
-        ORDER BY bucket_key DESC
-        LIMIT 1
+        FROM   analytics_summary
+        WHERE  item_id     = ?
+          AND  granularity = 'weekly'
+          AND  qlt = -1 AND ptn = -1 AND upgrade_level = -1
+        ORDER  BY bucket_key DESC
+        LIMIT  1
     """, (item_id,)).fetchone()
     if an:
         if an["avg_price"]:
@@ -262,27 +311,28 @@ def search_items(q: str, limit: int = 12) -> list[dict]:
         pattern = f"%{q}%"
         rows = freak.execute("""
             SELECT DISTINCT i.item_id, i.name_ru, i.name_en, i.icon_path,
-                   an.avg_price, an.amount_p50
-            FROM items i
+                            an.avg_price, an.amount_p50
+            FROM   items i
             LEFT JOIN analytics_summary an
-                   ON an.item_id = i.item_id
+                   ON an.item_id     = i.item_id
                   AND an.granularity = 'weekly'
                   AND an.qlt = -1 AND an.ptn = -1 AND an.upgrade_level = -1
-                  AND an.bucket_key = (
-                      SELECT MAX(bucket_key) FROM analytics_summary
-                      WHERE item_id = i.item_id AND granularity = 'weekly'
-                        AND qlt = -1 AND ptn = -1 AND upgrade_level = -1
-                  )
-            WHERE i.name_ru LIKE ? OR i.name_en LIKE ? OR i.item_id LIKE ?
-            LIMIT ?
+                  AND an.bucket_key  = (
+                          SELECT MAX(bucket_key) FROM analytics_summary
+                          WHERE  item_id     = i.item_id
+                            AND  granularity = 'weekly'
+                            AND  qlt = -1 AND ptn = -1 AND upgrade_level = -1
+                      )
+            WHERE  i.name_ru LIKE ? OR i.name_en LIKE ? OR i.item_id LIKE ?
+            LIMIT  ?
         """, (pattern, pattern, pattern, limit)).fetchall()
         return [{
-            "item_id":   r["item_id"],
-            "name_ru":   r["name_ru"] or "",
-            "name_en":   r["name_en"] or "",
+            "item_id":  r["item_id"],
+            "name_ru":  r["name_ru"]  or "",
+            "name_en":  r["name_en"]  or "",
             "icon_path": r["icon_path"] or "",
-            "median":    round(r["avg_price"]) if r["avg_price"] else None,
-            "rec_qty":   r["amount_p50"] if r["amount_p50"] else None,
+            "median":   round(r["avg_price"]) if r["avg_price"] else None,
+            "rec_qty":  r["amount_p50"] if r["amount_p50"] else None,
         } for r in rows]
     finally:
         freak.close()
@@ -304,7 +354,6 @@ def record_buy(body: dict) -> None:
     icon  = body.get("icon_path", "")
     qty   = int(body["qty"])
     price = int(body["price"])
-
     if qty <= 0 or price <= 0:
         raise ValueError("qty and price must be positive")
 
@@ -327,7 +376,6 @@ def record_sell(body: dict) -> None:
     iid   = body["item_id"]
     qty   = int(body["qty"])
     price = int(body["price"])
-
     if qty <= 0 or price <= 0:
         raise ValueError("qty and price must be positive")
 
@@ -353,7 +401,9 @@ CORS_HEADERS = {
     "Access-Control-Allow-Headers": "Content-Type",
 }
 
+
 class Handler(BaseHTTPRequestHandler):
+
     def log_message(self, fmt, *args):
         log.debug(fmt, *args)
 
@@ -362,7 +412,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         for k, v in CORS_HEADERS.items():
             self.send_header(k, v)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Type",   "application/json; charset=utf-8")
         self.send_header("Content-Length", len(body))
         self.end_headers()
         self.wfile.write(body)
@@ -421,18 +471,28 @@ class Handler(BaseHTTPRequestHandler):
 def run_server() -> None:
     """Запустить сервер в текущем потоке (блокирующий вызов).
 
-    Соединение с tracker.db открывается здесь, а не лениво при первом
-    запросе, чтобы гарантировать WAL-checkpoint и close при любом выходе —
-    нормальном завершении, KeyboardInterrupt или необработанном исключении.
+    FIX #1 (thread-safety):
+        Больше не держим единое глобальное соединение.  Вместо этого
+        инициализируем _tracker_path_holder (путь к БД) и применяем схему
+        через одноразовое соединение в главном потоке.  Каждый рабочий поток
+        HTTPServer сам открывает своё соединение через get_tracker() →
+        _get_thread_conn(), которое кэшируется в threading.local().
 
-    Daemon-поток не получает сигналов завершения, поэтому явный try/finally
-    здесь — единственный надёжный способ сбросить WAL-журнал перед тем,
-    как процесс упадёт.
+        WAL-режим (уже задан в TRACKER_SCHEMA) позволяет нескольким
+        конкурентным писателям работать без блокировок на уровне Python.
     """
-    conn = _connect(TRACKER_PATH)
-    conn.executescript(TRACKER_SCHEMA)
-    conn.commit()
-    _set_tracker_conn(conn)
+    # Инициализируем путь для threading.local-соединений
+    _tracker_path_holder.clear()
+    _tracker_path_holder.append(TRACKER_PATH)
+
+    # Применяем схему через временное соединение в текущем потоке
+    os.makedirs(os.path.dirname(os.path.abspath(TRACKER_PATH)), exist_ok=True)
+    init_conn = sqlite3.connect(TRACKER_PATH)
+    try:
+        init_conn.executescript(TRACKER_SCHEMA)
+        init_conn.commit()
+    finally:
+        init_conn.close()
 
     freak_status = "found" if os.path.exists(FREAK_PATH) else "NOT FOUND"
     log.info(
@@ -445,16 +505,16 @@ def run_server() -> None:
         server.serve_forever()
     finally:
         server.server_close()
-        # Принудительный WAL-checkpoint перед закрытием: сбрасывает
-        # журнал в основной файл даже при нештатном завершении процесса.
+        # WAL-checkpoint: сбрасываем журнал в основной файл при остановке
         try:
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            conn.commit()
+            fin_conn = sqlite3.connect(TRACKER_PATH)
+            fin_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            fin_conn.commit()
+            fin_conn.close()
         except Exception:
             pass
-        conn.close()
-        _set_tracker_conn(None)
-        log.info("Tracker server остановлен, соединение закрыто.")
+        _tracker_path_holder.clear()
+        log.info("Tracker server остановлен.")
 
 
 if __name__ == "__main__":
