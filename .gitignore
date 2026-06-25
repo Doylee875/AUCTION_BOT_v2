@@ -1,0 +1,7 @@
+FREAK.db*
+tracker.db*
+.env
+__pycache__/
+.continue/
+.ruff_cache/
+icons/

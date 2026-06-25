@@ -1,0 +1,4 @@
+aiohttp
+aiolimiter
+cachetools
+python-dotenv==1.0.1

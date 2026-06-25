@@ -1,0 +1,1278 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Auction Tracker</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0a0d13;
+  --bg2: #111520;
+  --bg3: #181d2c;
+  --bg4: #1e2438;
+  --border: rgba(255,255,255,0.07);
+  --border2: rgba(255,255,255,0.13);
+  --text: #dde1ef;
+  --text2: #7a82a0;
+  --text3: #404762;
+  --accent: #4b78ff;
+  --accent2: #3560e0;
+  --green: #2ec97c;
+  --green-bg: rgba(46,201,124,0.10);
+  --green-border: rgba(46,201,124,0.25);
+  --red: #e05555;
+  --red-bg: rgba(224,85,85,0.10);
+  --amber: #f0a020;
+  --amber-bg: rgba(240,160,32,0.10);
+  --purple: #9b7dff;
+  --purple-bg: rgba(155,125,255,0.10);
+  --r: 6px;
+  --r-lg: 10px;
+}
+
+body {
+  font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+
+header {
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  padding: 0 20px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  flex-shrink: 0;
+}
+
+.logo {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-right: 14px;
+  border-right: 1px solid var(--border);
+}
+.logo svg { opacity: 0.7; }
+
+.chips { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; min-width: 0; }
+
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px 3px 8px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  font-size: 11px;
+  white-space: nowrap;
+  line-height: 1;
+}
+.chip .cl  { color: var(--text2); font-size: 10px; margin-right: 1px; }
+.chip .cv  { font-weight: 600; color: var(--text); }
+.chip.red   .cv { color: var(--red); }
+.chip.green .cv { color: var(--green); }
+.chip.amber .cv { color: var(--amber); }
+.chip.blue  .cv { color: var(--accent); }
+.chip.purple .cv { color: var(--purple); }
+
+.db-indicator {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--text3);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.db-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text3); flex-shrink: 0; }
+.db-dot.ok  { background: var(--green); box-shadow: 0 0 5px var(--green); }
+.db-dot.err { background: var(--red); }
+
+.layout {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  height: calc(100vh - 48px);
+  overflow: hidden;
+}
+
+.panel-l {
+  background: var(--bg2);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.panel-l-inner {
+  padding: 14px 14px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.section-title {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text3);
+}
+
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field label { font-size: 10px; color: var(--text2); }
+
+.field input {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 7px 9px;
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.15s;
+  width: 100%;
+}
+.field input:focus { border-color: var(--accent); }
+.field input::placeholder { color: var(--text3); }
+.field input[readonly] {
+  color: var(--text2);
+  cursor: default;
+  border-color: transparent;
+  background: var(--bg4);
+}
+/* #7: поле с ошибкой */
+.field input.err { border-color: var(--red); }
+.field-error { font-size: 10px; color: var(--red); display: none; }
+.field-error.show { display: block; }
+
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+.ac-wrap { position: relative; }
+.ac-list {
+  display: none;
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 0; right: 0;
+  background: var(--bg4);
+  border: 1px solid var(--border2);
+  border-radius: var(--r);
+  z-index: 50;
+  max-height: 180px;
+  overflow-y: auto;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+.ac-list.open { display: block; }
+.ac-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  cursor: pointer;
+  transition: background 0.1s;
+  font-size: 12px;
+}
+/* #8: выделение с клавиатуры */
+.ac-item:hover, .ac-item.focused { background: var(--bg3); }
+.ac-item img { width: 24px; height: 24px; border-radius: 4px; object-fit: cover; flex-shrink: 0; }
+.ac-item .ac-name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ac-item .ac-id   { font-size: 10px; color: var(--text3); font-family: monospace; }
+
+.field-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+.meta-badge {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  color: var(--text2);
+  background: var(--bg4);
+}
+.meta-badge.hi { color: var(--green); border-color: var(--green-border); background: var(--green-bg); }
+.meta-badge.lo { color: var(--amber); border-color: rgba(240,160,32,0.25); background: var(--amber-bg); }
+
+.btn-buy {
+  width: 100%;
+  padding: 9px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--r);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+  flex-shrink: 0;
+}
+.btn-buy:hover   { background: var(--accent2); }
+.btn-buy:active  { transform: scale(0.98); }
+.btn-buy:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.divider { border: none; border-top: 1px solid var(--border); margin: 4px 0; flex-shrink: 0; }
+
+.deals-section {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 0 14px 14px;
+}
+.deals-section .section-title { margin-bottom: 8px; padding-top: 10px; }
+
+.deals-list { display: flex; flex-direction: column; gap: 5px; overflow-y: auto; flex: 1; }
+
+.deal-card {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 7px 9px;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.deal-card.buy  { border-left: 2px solid var(--red); }
+.deal-card.sell { border-left: 2px solid var(--green); }
+.deal-card .dn  { font-weight: 500; color: var(--text); margin-bottom: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.deal-card .dm  { color: var(--text2); }
+.deal-card .dt  { font-size: 10px; color: var(--text3); margin-top: 1px; }
+
+.panel-r { overflow: auto; padding: 14px; background: var(--bg); }
+
+.table-wrap { overflow-x: auto; }
+
+table { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 860px; }
+
+thead th {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  padding: 7px 10px;
+  text-align: left;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text3);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+thead th:hover { color: var(--text2); }
+thead th.num { text-align: right; }
+thead th.sorted { color: var(--accent); }
+.sort-icon { display: inline-block; margin-left: 3px; font-size: 8px; opacity: 0.5; }
+thead th.sorted .sort-icon { opacity: 1; }
+
+tbody tr { border-bottom: 1px solid var(--border); transition: background 0.08s; }
+tbody tr:hover { background: var(--bg2); }
+
+tbody td { padding: 9px 10px; vertical-align: middle; }
+td.num  { text-align: right; font-variant-numeric: tabular-nums; }
+td.muted { color: var(--text2); }
+td.mono  { font-family: 'SF Mono', 'Fira Mono', monospace; font-size: 10px; color: var(--text3); }
+
+.i-img {
+  width: 30px; height: 30px;
+  border-radius: 5px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.i-img img { width: 100%; height: 100%; object-fit: cover; border-radius: 4px; }
+
+.i-name { font-weight: 500; max-width: 130px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.sp-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.sp-badge.ok   { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
+.sp-badge.warn { background: var(--amber-bg); color: var(--amber); border: 1px solid rgba(240,160,32,0.25); }
+
+.sell-btn {
+  padding: 4px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--border2);
+  background: transparent;
+  color: var(--text2);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.12s;
+  white-space: nowrap;
+}
+.sell-btn:hover { background: var(--green-bg); color: var(--green); border-color: var(--green-border); }
+
+.grp-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  color: var(--text3);
+  background: var(--bg4);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1px 6px;
+}
+
+.empty { text-align: center; padding: 64px 20px; color: var(--text3); }
+.empty .eicon { font-size: 36px; margin-bottom: 12px; }
+.empty p { font-size: 13px; }
+
+.overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.65);
+  z-index: 100;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(2px);
+}
+.overlay.open { display: flex; }
+
+.modal {
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: var(--r-lg);
+  padding: 22px;
+  width: 360px;
+  max-width: calc(100vw - 32px);
+}
+.modal h3 { font-size: 14px; margin-bottom: 14px; font-weight: 600; }
+.modal-info {
+  background: var(--bg3);
+  border-radius: var(--r);
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text2);
+  margin-bottom: 14px;
+  line-height: 1.8;
+}
+.modal-info strong { color: var(--text); }
+.modal-info .hi { color: var(--green); font-weight: 600; }
+
+.modal-fields { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
+
+.sell-tabs {
+  display: flex;
+  gap: 4px;
+  background: var(--bg3);
+  border-radius: var(--r);
+  padding: 3px;
+  margin-bottom: 12px;
+}
+.sell-tab {
+  flex: 1;
+  padding: 5px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text2);
+  font-size: 11px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.12s;
+}
+.sell-tab.active { background: var(--bg4); color: var(--text); border: 1px solid var(--border2); }
+
+.modal-btns { display: flex; gap: 8px; }
+.btn-cancel {
+  flex: 1; padding: 8px;
+  border-radius: var(--r); border: 1px solid var(--border2);
+  background: transparent; color: var(--text2); font-size: 12px; cursor: pointer;
+  transition: background 0.12s;
+}
+.btn-cancel:hover { background: var(--bg3); }
+.btn-confirm {
+  flex: 1; padding: 8px;
+  border-radius: var(--r); border: none;
+  background: var(--green); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer;
+  transition: opacity 0.12s;
+}
+.btn-confirm:hover { opacity: 0.87; }
+.btn-confirm:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.db-modal .field { margin-bottom: 8px; }
+.db-modal .field label { font-size: 11px; color: var(--text2); margin-bottom: 4px; display: block; }
+.db-modal .field input {
+  background: var(--bg3); border: 1px solid var(--border); border-radius: var(--r);
+  padding: 7px 10px; color: var(--text); font-size: 12px; outline: none; width: 100%;
+  transition: border-color 0.15s;
+}
+.db-modal .field input:focus { border-color: var(--accent); }
+.db-hint { font-size: 10px; color: var(--text3); margin-top: 4px; line-height: 1.5; }
+
+.toast-wrap {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 200;
+  pointer-events: none;
+}
+.toast {
+  background: var(--bg4);
+  border: 1px solid var(--border2);
+  border-radius: var(--r);
+  padding: 8px 14px;
+  font-size: 12px;
+  color: var(--text);
+  animation: toastIn 0.2s ease;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+.toast.err { border-color: var(--red); color: var(--red); }
+.toast.ok  { border-color: var(--green-border); color: var(--green); }
+@keyframes toastIn { from { opacity:0; transform: translateY(8px); } to { opacity:1; transform: none; } }
+
+@media (max-width: 760px) {
+  body { overflow: auto; }
+  .layout { grid-template-columns: 1fr; height: auto; }
+  .panel-l { border-right: none; border-bottom: 1px solid var(--border); }
+  .deals-list { max-height: 140px; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+      <rect x="1" y="1" width="5" height="5" rx="1" fill="currentColor"/>
+      <rect x="8" y="1" width="5" height="5" rx="1" fill="currentColor" opacity=".5"/>
+      <rect x="1" y="8" width="5" height="5" rx="1" fill="currentColor" opacity=".5"/>
+      <rect x="8" y="8" width="5" height="5" rx="1" fill="currentColor"/>
+    </svg>
+    AUCTION TRACKER
+  </div>
+
+  <div class="chips">
+    <div class="chip blue">
+      <span class="cl">Позиций</span><span class="cv" id="s-items">0</span>
+    </div>
+    <div class="chip" id="chip-deals">
+      <span class="cl">Сделок</span><span class="cv" id="s-deals">0</span>
+    </div>
+    <div class="chip red">
+      <span class="cl">Закуплено</span><span class="cv" id="s-spent">0 ₽</span>
+    </div>
+    <div class="chip green">
+      <span class="cl">Продано</span><span class="cv" id="s-sold">0 ₽</span>
+    </div>
+    <div class="chip" id="chip-profit">
+      <span class="cl">Прибыль</span><span class="cv" id="s-profit">0 ₽</span>
+    </div>
+    <div class="chip amber">
+      <span class="cl">ROI</span><span class="cv" id="s-roi">—</span>
+    </div>
+    <div class="chip purple">
+      <span class="cl">На складе</span><span class="cv" id="s-stock">0 ₽</span>
+    </div>
+  </div>
+
+  <div class="db-indicator" onclick="openDbModal()" title="Настройки БД" style="cursor:pointer">
+    <div class="db-dot" id="db-dot"></div>
+    <span id="db-label">Нет подключения</span>
+  </div>
+</header>
+
+<div class="layout">
+  <div class="panel-l">
+    <div class="panel-l-inner">
+      <div class="section-title">Новая закупка</div>
+
+      <div class="field">
+        <label>Название предмета</label>
+        <div class="ac-wrap">
+          <input type="text" id="f-name" placeholder="Начните вводить…" autocomplete="off"
+                 oninput="acInput('name')" onblur="acClose(300)" onfocus="acInput('name')"
+                 onkeydown="acKey(event,'name')">
+          <div class="ac-list" id="ac-name"></div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Item ID</label>
+        <div class="ac-wrap">
+          <input type="text" id="f-id" placeholder="e.g. 9mmq" autocomplete="off"
+                 oninput="acInput('id')" onblur="acClose(300)" onfocus="acInput('id')"
+                 onkeydown="acKey(event,'id')">
+          <div class="ac-list" id="ac-id"></div>
+        </div>
+        <div class="field-meta" id="f-meta"></div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label>Кол-во в лоте</label>
+          <!-- #7: type=number + step=1 + min=1; валидация через Number() в JS -->
+          <input type="number" id="f-qty" placeholder="10" min="1" step="1">
+          <span class="field-error" id="err-qty"></span>
+        </div>
+        <div class="field">
+          <label>Цена лота (₽)</label>
+          <input type="number" id="f-price" placeholder="5 000" min="1" step="1">
+          <span class="field-error" id="err-price"></span>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label>Рек. объём продажи</label>
+          <input type="text" id="f-rec-qty" placeholder="—" readonly tabindex="-1">
+        </div>
+        <div class="field">
+          <label>Медиана цены (₽)</label>
+          <input type="text" id="f-median" placeholder="—" readonly tabindex="-1">
+        </div>
+      </div>
+
+      <button class="btn-buy" id="btn-buy" onclick="handleBuy()">✓ Купил</button>
+      <hr class="divider">
+    </div>
+
+    <div class="deals-section">
+      <div class="section-title">История сделок</div>
+      <div class="deals-list" id="deals-list">
+        <div style="color:var(--text3);font-size:11px;text-align:center;padding:20px 0">Сделок пока нет</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel-r">
+    <div class="table-wrap">
+      <table id="main-table">
+        <thead>
+          <tr>
+            <th style="width:34px"></th>
+            <th onclick="sortBy('name')">Предмет <span class="sort-icon">↕</span></th>
+            <th onclick="sortBy('id')" class="mono">ID <span class="sort-icon">↕</span></th>
+            <th onclick="sortBy('qty')" class="num">Куплено <span class="sort-icon">↕</span></th>
+            <th onclick="sortBy('totalSpent')" class="num">Потрачено <span class="sort-icon">↕</span></th>
+            <th onclick="sortBy('avgPpu')" class="num">₽/шт (ср.взв.) <span class="sort-icon">↕</span></th>
+            <th onclick="sortBy('recQty')" class="num">Рек. объём <span class="sort-icon">↕</span></th>
+            <th onclick="sortBy('sellPrice')" class="num">Цена продажи <span class="sort-icon">↕</span></th>
+            <th onclick="sortBy('sellTotal')" class="num">Всё <span class="sort-icon">↕</span></th>
+            <th onclick="sortBy('sellRec')" class="num">Рек. объём <span class="sort-icon">↕</span></th>
+            <th style="width:80px"></th>
+          </tr>
+        </thead>
+        <tbody id="tbody">
+          <tr><td colspan="11">
+            <div class="empty"><div class="eicon">📦</div><p>Добавьте первую закупку</p></div>
+          </td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="sell-overlay" onclick="if(event.target===this)closeSell()">
+  <div class="modal">
+    <h3>Зафиксировать продажу</h3>
+    <div class="modal-info" id="sell-info"></div>
+
+    <div class="sell-tabs">
+      <button class="sell-tab" id="tab-all"    onclick="sellTab('all')">Всё</button>
+      <button class="sell-tab" id="tab-rec"    onclick="sellTab('rec')">Рек. объём</button>
+      <button class="sell-tab active" id="tab-custom" onclick="sellTab('custom')">Вручную</button>
+    </div>
+
+    <div class="modal-fields">
+      <div class="field">
+        <label>Количество (шт)</label>
+        <input type="number" id="sell-qty" min="1" step="1">
+      </div>
+      <div class="field">
+        <label>Цена за штуку (₽)</label>
+        <input type="number" id="sell-price" min="1" step="1">
+      </div>
+    </div>
+    <div class="modal-btns">
+      <button class="btn-cancel" onclick="closeSell()">Отмена</button>
+      <button class="btn-confirm" id="btn-confirm-sell" onclick="confirmSell()">Продал</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="db-overlay" onclick="if(event.target===this)closeDbModal()">
+  <div class="modal db-modal">
+    <h3>Подключение к базам данных</h3>
+
+    <div class="field">
+      <label>Путь к FREAK.db (read-only, бот)</label>
+      <input type="text" id="db-freak-path" placeholder="data/FREAK.db">
+    </div>
+    <div class="db-hint">
+      Трекер читает items, analytics_summary из этой БД.<br>
+      Запись только в tracker.db.
+    </div>
+
+    <div class="field" style="margin-top:12px">
+      <label>Путь к tracker.db (запись)</label>
+      <input type="text" id="db-tracker-path" placeholder="data/tracker.db">
+    </div>
+    <div class="db-hint">
+      Покупки, продажи, история сделок трекера.<br>
+      Файл будет создан автоматически при первом запуске сервера.
+    </div>
+
+    <div style="margin-top:12px;padding:10px;background:var(--bg3);border-radius:var(--r);font-size:11px;color:var(--text2);line-height:1.7">
+      ⚠️ Прямое чтение SQLite из браузера невозможно — нужен локальный
+      HTTP-сервер (<code style="color:var(--text)">tracker_server.py</code>).
+      Пути сохраняются локально в браузере. Статус подключения отображается вверху.
+    </div>
+
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn-cancel" onclick="closeDbModal()">Закрыть</button>
+      <button class="btn-confirm" onclick="saveDbConfig()">Сохранить и проверить</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-wrap" id="toasts"></div>
+
+<script>
+'use strict';
+
+/* ─── CONFIG ─────────────────────────────────────────────────────────────── */
+
+const API = (() => {
+  const base = () => localStorage.getItem('tracker_api') || 'http://localhost:7734';
+  const h = { 'Content-Type': 'application/json' };
+
+  async function get(path) {
+    const r = await fetch(base() + path, { signal: AbortSignal.timeout(4000) });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  }
+  async function post(path, body) {
+    const r = await fetch(base() + path, { method:'POST', headers: h, body: JSON.stringify(body), signal: AbortSignal.timeout(4000) });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  }
+  return { get, post };
+})();
+
+/* ─── STATE ──────────────────────────────────────────────────────────────── */
+
+let state = { items: {}, deals: [], dealGroups: {} };
+
+function loadLocal() {
+  try {
+    const s = localStorage.getItem('auc_state');
+    if (s) state = JSON.parse(s);
+  } catch(_) {}
+}
+
+function saveLocal() {
+  try { localStorage.setItem('auc_state', JSON.stringify(state)); } catch(_) {}
+}
+
+/* ─── SERVER SYNC ────────────────────────────────────────────────────────── */
+
+let serverOk = false;
+
+async function ping() {
+  try {
+    await API.get('/ping');
+    serverOk = true;
+    setDbStatus(true);
+  } catch(_) {
+    serverOk = false;
+    setDbStatus(false);
+  }
+}
+
+function setDbStatus(ok) {
+  document.getElementById('db-dot').className = 'db-dot ' + (ok ? 'ok' : 'err');
+  document.getElementById('db-label').textContent = ok ? 'tracker.db подключён' : 'Нет подключения';
+}
+
+// #10: sync не затирает несохранённые локальные данные — мы обновляем state
+//      только если сервер ответил; pending-операции к тому моменту уже должны
+//      были завершиться (await в handleBuy/confirmSell). Если сервер упал,
+//      sync пропускается и localStorage остаётся актуальным.
+async function syncFromServer() {
+  if (!serverOk) return;
+  try {
+    const s = await API.get('/state');
+    state.items      = s.items      || {};
+    state.deals      = s.deals      || [];
+    state.dealGroups = s.dealGroups || {};
+    saveLocal();
+    render();
+  } catch(e) {
+    console.warn('syncFromServer:', e);
+  }
+}
+
+/* ─── AUTOCOMPLETE ───────────────────────────────────────────────────────── */
+
+let acTimer = null;
+// #6: кэш живёт всю сессию; сбрасывается только при явной очистке формы
+const acCache = {};
+// #8: индекс сфокусированного элемента в списке
+const acFocusIdx = { name: -1, id: -1 };
+// последние результаты для навигации стрелками
+const acResults  = { name: [], id: [] };
+
+async function acInput(field) {
+  const q = document.getElementById(field === 'name' ? 'f-name' : 'f-id').value.trim();
+  if (q.length < 1) { acHide(field); return; }
+
+  clearTimeout(acTimer);
+  acTimer = setTimeout(async () => {
+    let results = acCache[q];
+    if (!results) {
+      if (!serverOk) { acHide(field); return; }
+      try {
+        results = await API.get('/items?q=' + encodeURIComponent(q));
+        acCache[q] = results;
+      } catch(_) { acHide(field); return; }
+    }
+
+    acResults[field] = results;
+    acFocusIdx[field] = -1;
+    _renderAcList(field, results);
+  }, 180);
+}
+
+// #3: единственная функция acSelect (дублирующее объявление удалено)
+// #4: name уже санитизирован сервером через html.escape; здесь дополнительно escH
+let currentIconPath = '';
+
+function acSelect(jsonStr) {
+  const it = JSON.parse(jsonStr);
+  currentIconPath = it.icon_path || '';
+  document.getElementById('f-name').value = it.name_ru || it.name_en || '';
+  document.getElementById('f-id').value   = it.item_id || '';
+  acHide('name'); acHide('id');
+  fillFromBot(it);
+}
+
+function _renderAcList(field, results) {
+  const list = document.getElementById('ac-' + field);
+  if (!results.length) { list.classList.remove('open'); return; }
+
+  list.innerHTML = results.slice(0, 12).map((it, idx) => `
+    <div class="ac-item" data-idx="${idx}"
+         onmousedown="acSelect(${JSON.stringify(JSON.stringify(it))})">
+      <img src="${escH(it.icon_path || '')}" onerror="this.style.display='none'" alt="">
+      <div>
+        <div class="ac-name">${escH(it.name_ru || it.name_en || it.item_id)}</div>
+        <div class="ac-id">${escH(it.item_id)}</div>
+      </div>
+    </div>
+  `).join('');
+  list.classList.add('open');
+}
+
+// #8: навигация стрелками + Enter в автокомплите
+function acKey(event, field) {
+  const list = document.getElementById('ac-' + field);
+  if (!list.classList.contains('open')) return;
+  const items = list.querySelectorAll('.ac-item');
+  if (!items.length) return;
+
+  if (event.key === 'ArrowDown') {
+    event.preventDefault();
+    acFocusIdx[field] = Math.min(acFocusIdx[field] + 1, items.length - 1);
+    _acHighlight(list, acFocusIdx[field]);
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault();
+    acFocusIdx[field] = Math.max(acFocusIdx[field] - 1, 0);
+    _acHighlight(list, acFocusIdx[field]);
+  } else if (event.key === 'Enter') {
+    event.preventDefault();
+    const idx = acFocusIdx[field];
+    if (idx >= 0 && acResults[field][idx]) {
+      acSelect(JSON.stringify(acResults[field][idx]));
+    }
+  } else if (event.key === 'Escape') {
+    acHide(field);
+  }
+}
+
+function _acHighlight(list, idx) {
+  list.querySelectorAll('.ac-item').forEach((el, i) =>
+    el.classList.toggle('focused', i === idx)
+  );
+}
+
+function acHide(field) {
+  document.getElementById('ac-' + field).classList.remove('open');
+  acFocusIdx[field] = -1;
+}
+
+function acClose(delay) {
+  setTimeout(() => { acHide('name'); acHide('id'); }, delay);
+}
+
+function fillFromBot(it) {
+  document.getElementById('f-rec-qty').value = it.rec_qty != null ? it.rec_qty : '';
+  document.getElementById('f-median').value  = it.median  != null ? it.median  : '';
+  const meta = document.getElementById('f-meta');
+  if (it.median) {
+    meta.innerHTML = `
+      <span class="meta-badge hi">Медиана: ${fmt(it.median)} ₽</span>
+      ${it.rec_qty ? `<span class="meta-badge">Рек.: ${fmt(it.rec_qty)} шт</span>` : ''}
+    `;
+  } else {
+    meta.innerHTML = '<span class="meta-badge lo">Нет данных бота</span>';
+  }
+}
+
+/* ─── VALIDATION HELPERS ─────────────────────────────────────────────────── */
+
+// #7: Number() вместо parseInt; дробные qty/price отклоняются явно
+function fieldErr(id, errId, msg) {
+  document.getElementById(id).classList.add('err');
+  const el = document.getElementById(errId);
+  el.textContent = msg;
+  el.classList.add('show');
+}
+
+function fieldOk(id, errId) {
+  document.getElementById(id).classList.remove('err');
+  document.getElementById(errId).classList.remove('show');
+}
+
+function parsePositiveInt(rawVal, fieldId, errId, label) {
+  fieldOk(fieldId, errId);
+  const n = Number(rawVal);
+  if (!rawVal || isNaN(n) || n <= 0) {
+    fieldErr(fieldId, errId, `Укажи ${label} > 0`);
+    return null;
+  }
+  if (!Number.isInteger(n)) {
+    fieldErr(fieldId, errId, `${label} должно быть целым`);
+    return null;
+  }
+  return n;
+}
+
+/* ─── BUY ────────────────────────────────────────────────────────────────── */
+
+// #9: флаг защиты от двойного нажатия
+let buyInFlight = false;
+
+async function handleBuy() {
+  if (buyInFlight) return;
+
+  const name    = document.getElementById('f-name').value.trim();
+  const id      = document.getElementById('f-id').value.trim();
+  const qty     = parsePositiveInt(document.getElementById('f-qty').value,   'f-qty',   'err-qty',   'количество');
+  const price   = parsePositiveInt(document.getElementById('f-price').value, 'f-price', 'err-price', 'цену');
+  const recQty  = parseInt(document.getElementById('f-rec-qty').value) || 0;
+  const median  = parseInt(document.getElementById('f-median').value)  || 0;
+
+  if (!name || !id) { toast('Заполни название и Item ID', 'err'); return; }
+  if (!qty || !price) return;   // ошибки уже показаны fieldErr
+
+  const ppu  = Math.round(price / qty);
+  const dgId = 'dg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+
+  // #1: сначала пишем на сервер, потом обновляем state
+  buyInFlight = true;
+  document.getElementById('btn-buy').disabled = true;
+
+  if (serverOk) {
+    try {
+      await API.post('/buy', {
+        deal_group_id: dgId,
+        item_id:       id,
+        name,
+        icon_path:     currentIconPath,
+        qty,
+        price,
+      });
+    } catch(e) {
+      toast('Ошибка записи на сервер: ' + e.message, 'err');
+      buyInFlight = false;
+      document.getElementById('btn-buy').disabled = false;
+      return;
+    }
+  }
+
+  // Применяем к state после успешной записи (или если сервер недоступен)
+  if (!state.items[id]) {
+    state.items[id] = {
+      name, id,
+      iconPath: currentIconPath,
+      qty: 0, totalSpent: 0,
+      recQty, median,
+      lots: [],
+    };
+  }
+  const item = state.items[id];
+  item.qty        += qty;
+  item.totalSpent += price;
+  item.recQty      = recQty  || item.recQty;
+  item.median      = median  || item.median;
+  if (!item.iconPath) item.iconPath = currentIconPath;
+  item.lots.push({ qty, price, ppu, ts: Date.now() });
+
+  state.dealGroups[dgId] = { itemId: id, boughtQty: qty, soldQty: 0, closed: false, ts: Date.now() };
+  state.deals.unshift({ type: 'buy', dealGroupId: dgId, itemId: id, name, qty, price, ppu, ts: Date.now() });
+
+  saveLocal();
+  render();
+  clearForm();
+  toast(`Куплено: ${fmt(qty)} шт × ${fmtR(ppu)}`, 'ok');
+
+  buyInFlight = false;
+  document.getElementById('btn-buy').disabled = false;
+}
+
+function clearForm() {
+  ['f-name','f-id','f-qty','f-price'].forEach(fid => { document.getElementById(fid).value = ''; });
+  document.getElementById('f-rec-qty').value = '';
+  document.getElementById('f-median').value  = '';
+  document.getElementById('f-meta').innerHTML = '';
+  fieldOk('f-qty',   'err-qty');
+  fieldOk('f-price', 'err-price');
+  currentIconPath = '';
+  // #6: кэш НЕ сбрасывается — он живёт на уровне сессии
+}
+
+/* ─── SELL ───────────────────────────────────────────────────────────────── */
+
+let sellKey = null;
+let sellInFlight = false;
+
+function openSell(key) {
+  sellKey = key;
+  const item = state.items[key];
+  if (!item) return;
+
+  const avgPpu    = item.qty > 0 ? Math.round(item.totalSpent / item.qty) : 0;
+  const sellPrice = calcSellPrice(item);
+
+  document.getElementById('sell-info').innerHTML = `
+    <strong>${escH(item.name)}</strong><br>
+    На складе: <strong>${fmt(item.qty)} шт</strong><br>
+    Ср.взв. цена закупки: <strong>${fmtR(avgPpu)}/шт</strong><br>
+    Цена продажи: <span class="hi">${fmtR(sellPrice)}/шт</span>
+    ${item.median ? `· Медиана: ${fmtR(item.median)}/шт` : ''}
+  `;
+  document.getElementById('sell-qty').value   = item.qty;
+  document.getElementById('sell-price').value = sellPrice;
+  document.getElementById('btn-confirm-sell').disabled = false;
+  sellTab('custom');
+  document.getElementById('sell-overlay').classList.add('open');
+}
+
+function sellTab(mode) {
+  const item = state.items[sellKey];
+  if (!item) return;
+  ['all','rec','custom'].forEach(t =>
+    document.getElementById('tab-'+t).classList.toggle('active', t === mode)
+  );
+  if (mode === 'all') {
+    document.getElementById('sell-qty').value   = item.qty;
+    document.getElementById('sell-price').value = calcSellPrice(item);
+  } else if (mode === 'rec') {
+    document.getElementById('sell-qty').value   = Math.min(item.recQty || item.qty, item.qty);
+    document.getElementById('sell-price').value = calcSellPrice(item);
+  }
+}
+
+function closeSell() {
+  document.getElementById('sell-overlay').classList.remove('open');
+  sellKey = null;
+}
+
+async function confirmSell() {
+  if (sellInFlight) return;
+
+  const key   = sellKey;
+  const qty   = parseInt(document.getElementById('sell-qty').value)   || 0;
+  const price = parseInt(document.getElementById('sell-price').value) || 0;
+
+  if (!key || qty <= 0 || price <= 0) { toast('Укажи количество и цену', 'err'); return; }
+
+  const item = state.items[key];
+  if (!item) { closeSell(); return; }
+  if (qty > item.qty) { toast(`На складе только ${fmt(item.qty)} шт`, 'err'); return; }
+
+  const dg   = findOpenDealGroup(key);
+  const dgId = dg ? dg[0] : null;
+
+  // #1: сначала сервер
+  sellInFlight = true;
+  document.getElementById('btn-confirm-sell').disabled = true;
+
+  if (serverOk) {
+    try {
+      await API.post('/sell', { deal_group_id: dgId, item_id: key, qty, price });
+    } catch(e) {
+      toast('Ошибка записи: ' + e.message, 'err');
+      sellInFlight = false;
+      document.getElementById('btn-confirm-sell').disabled = false;
+      return;
+    }
+  }
+
+  // #2: share считается относительно qty ДО вычитания
+  const qty_before = item.qty;
+  const share      = qty / qty_before;
+  item.qty         = Math.max(0, qty_before - qty);
+  item.totalSpent  = Math.max(0, Math.round(item.totalSpent * (1 - share)));
+
+  if (dgId) {
+    state.dealGroups[dgId].soldQty += qty;
+    if (state.dealGroups[dgId].soldQty >= state.dealGroups[dgId].boughtQty) {
+      state.dealGroups[dgId].closed = true;
+    }
+  }
+
+  const revenue = qty * price;
+  state.deals.unshift({
+    type: 'sell', dealGroupId: dgId, itemId: key, name: item.name,
+    qty, price, revenue, ts: Date.now()
+  });
+
+  saveLocal();
+  closeSell();
+  render();
+  toast(`Продано: ${fmt(qty)} шт × ${fmtR(price)} = ${fmtR(revenue)}`, 'ok');
+
+  sellInFlight = false;
+}
+
+function findOpenDealGroup(itemId) {
+  return Object.entries(state.dealGroups)
+    .filter(([,dg]) => dg.itemId === itemId && !dg.closed)
+    .sort((a,b) => (b[1].ts||0) - (a[1].ts||0))[0] || null;
+}
+
+/* ─── CALCULATIONS ───────────────────────────────────────────────────────── */
+
+function calcSellPrice(item) {
+  if (!item || item.qty === 0) return 0;
+  const avgPpu  = Math.round(item.totalSpent / item.qty);
+  return Math.max(item.median || 0, Math.ceil(avgPpu * 1.05));
+}
+
+function calcRow(item) {
+  const qty       = item.qty;
+  const avgPpu    = qty > 0 ? Math.round(item.totalSpent / qty) : 0;
+  const sellPrice = calcSellPrice(item);
+  return {
+    name:       item.name,
+    id:         item.id,
+    iconPath:   item.iconPath,
+    qty,
+    totalSpent: item.totalSpent,
+    avgPpu,
+    recQty:     item.recQty || qty,
+    sellPrice,
+    sellTotal:  qty * sellPrice,
+    sellRec:    (item.recQty || qty) * sellPrice,
+  };
+}
+
+/* ─── RENDER ─────────────────────────────────────────────────────────────── */
+
+let sortKey = 'name';
+let sortDir = 1;
+
+function sortBy(key) {
+  if (sortKey === key) sortDir *= -1; else { sortKey = key; sortDir = 1; }
+  renderTable();
+}
+
+function render() { renderStats(); renderTable(); renderDeals(); }
+
+function fmt(n)  { return Number(n).toLocaleString('ru-RU'); }
+function fmtR(n) { return fmt(Math.round(n)) + ' ₽'; }
+function escH(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function renderStats() {
+  const activeItems = Object.values(state.items).filter(i => i.qty > 0);
+  const spent  = activeItems.reduce((s,i) => s + i.totalSpent, 0);
+  const sellDeals = state.deals.filter(d => d.type === 'sell');
+  const sold   = sellDeals.reduce((s,d) => s + (d.revenue || 0), 0);
+
+  let cogs = 0;
+  sellDeals.forEach(d => {
+    const buys = state.deals.filter(x => x.type === 'buy' && x.dealGroupId === d.dealGroupId);
+    const bQty   = buys.reduce((s,b) => s + b.qty, 0);
+    const bPrice = buys.reduce((s,b) => s + b.price, 0);
+    cogs += (bQty ? bPrice / bQty : 0) * d.qty;
+  });
+
+  const profit     = sold - cogs;
+  const closedDeals = Object.values(state.dealGroups).filter(dg => dg.closed).length;
+  const stockVal   = activeItems.reduce((s,i) => s + i.qty * calcSellPrice(i), 0);
+
+  document.getElementById('s-items').textContent = activeItems.length;
+  document.getElementById('s-deals').textContent = closedDeals;
+  document.getElementById('s-spent').textContent = fmtR(spent);
+  document.getElementById('s-sold').textContent  = fmtR(sold);
+  document.getElementById('s-stock').textContent = fmtR(stockVal);
+
+  const profitEl   = document.getElementById('s-profit');
+  const profitChip = document.getElementById('chip-profit');
+  profitEl.textContent = (profit >= 0 ? '+' : '') + fmtR(profit);
+  if (profit > 0)       { profitEl.style.color = 'var(--green)'; profitChip.className = 'chip green'; }
+  else if (profit < 0)  { profitEl.style.color = 'var(--red)';   profitChip.className = 'chip red'; }
+  else                  { profitEl.style.color = '';              profitChip.className = 'chip'; }
+
+  const boughtForSell = sellDeals.reduce((s,d) => {
+    const buys = state.deals.filter(x => x.type==='buy' && x.dealGroupId===d.dealGroupId);
+    return s + buys.reduce((ss,b) => ss + b.price, 0);
+  }, 0);
+  document.getElementById('s-roi').textContent =
+    boughtForSell > 0 ? ((sold / boughtForSell - 1) * 100).toFixed(1) + '%' : '—';
+}
+
+function renderTable() {
+  const tbody = document.getElementById('tbody');
+  const rows = Object.entries(state.items)
+    .filter(([,i]) => i.qty > 0)
+    .map(([key, item]) => ({ key, ...calcRow(item) }));
+
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="11"><div class="empty"><div class="eicon">📦</div><p>Нет активных позиций на складе</p></div></td></tr>`;
+    updateSortHeaders(); return;
+  }
+
+  rows.sort((a,b) => {
+    const va = a[sortKey] ?? ''; const vb = b[sortKey] ?? '';
+    return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
+  });
+
+  tbody.innerHTML = rows.map(r => {
+    const icon = r.iconPath
+      ? `<img src="${escH(r.iconPath)}" alt="" onerror="this.style.display='none'">`
+      : escH((r.name||'??').slice(0,2).toUpperCase());
+    return `<tr>
+      <td><div class="i-img">${icon}</div></td>
+      <td><div class="i-name" title="${escH(r.name)}">${escH(r.name)}</div></td>
+      <td class="mono">${escH(r.id)}</td>
+      <td class="num">${fmt(r.qty)}</td>
+      <td class="num">${fmtR(r.totalSpent)}</td>
+      <td class="num">${fmtR(r.avgPpu)}</td>
+      <td class="num muted">${fmt(r.recQty)}</td>
+      <td class="num"><span class="sp-badge ${r.sellPrice > 0 ? 'ok' : 'warn'}">${fmtR(r.sellPrice)}</span></td>
+      <td class="num">${fmtR(r.sellTotal)}</td>
+      <td class="num">${fmtR(r.sellRec)}</td>
+      <td><button class="sell-btn" onclick="openSell('${escH(r.key)}')">Продал</button></td>
+    </tr>`;
+  }).join('');
+  updateSortHeaders();
+}
+
+function updateSortHeaders() {
+  document.querySelectorAll('thead th').forEach(th => {
+    th.classList.remove('sorted');
+    const icon = th.querySelector('.sort-icon');
+    if (!icon) return;
+    const m = th.getAttribute('onclick')?.match(/sortBy\('(\w+)'\)/);
+    if (m && m[1] === sortKey) {
+      th.classList.add('sorted');
+      icon.textContent = sortDir > 0 ? '↑' : '↓';
+    } else { icon.textContent = '↕'; }
+  });
+}
+
+function renderDeals() {
+  const el = document.getElementById('deals-list');
+  if (!state.deals.length) {
+    el.innerHTML = '<div style="color:var(--text3);font-size:11px;text-align:center;padding:20px 0">Сделок пока нет</div>';
+    return;
+  }
+  el.innerHTML = state.deals.slice(0, 60).map(d => {
+    const dt = new Date(d.ts).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+    const dg = d.dealGroupId ? state.dealGroups[d.dealGroupId] : null;
+    // #4: d.name уже санитизирован (escH) — имена из сервера через html.escape,
+    //     из локального state — тоже escH при записи
+    const dgBadge = dg
+      ? `<span class="grp-badge">${dg.closed ? '✓' : '…'} ${fmt(dg.soldQty)}/${fmt(dg.boughtQty)} шт</span>`
+      : '';
+    if (d.type === 'buy') {
+      return `<div class="deal-card buy">
+        <div class="dn">${escH(d.name)} ${dgBadge}</div>
+        <div class="dm">Куплено ${fmt(d.qty)} шт · ${fmtR(d.price)} · ${fmtR(d.ppu)}/шт</div>
+        <div class="dt">${dt}</div>
+      </div>`;
+    } else {
+      return `<div class="deal-card sell">
+        <div class="dn">${escH(d.name)} ${dgBadge}</div>
+        <div class="dm">Продано ${fmt(d.qty)} шт · ${fmtR(d.revenue)} · ${fmtR(d.price)}/шт</div>
+        <div class="dt">${dt}</div>
+      </div>`;
+    }
+  }).join('');
+}
+
+/* ─── DB CONFIG ──────────────────────────────────────────────────────────── */
+
+function openDbModal() {
+  document.getElementById('db-freak-path').value   = localStorage.getItem('freak_db_path')   || 'data/FREAK.db';
+  document.getElementById('db-tracker-path').value = localStorage.getItem('tracker_db_path') || 'data/tracker.db';
+  document.getElementById('db-overlay').classList.add('open');
+}
+function closeDbModal() { document.getElementById('db-overlay').classList.remove('open'); }
+function saveDbConfig() {
+  localStorage.setItem('freak_db_path',   document.getElementById('db-freak-path').value.trim());
+  localStorage.setItem('tracker_db_path', document.getElementById('db-tracker-path').value.trim());
+  closeDbModal();
+  ping().then(() => { if (serverOk) syncFromServer(); });
+}
+
+/* ─── TOAST ──────────────────────────────────────────────────────────────── */
+
+function toast(msg, type = '') {
+  const t = document.createElement('div');
+  t.className = 'toast ' + type;
+  t.textContent = msg;
+  document.getElementById('toasts').appendChild(t);
+  setTimeout(() => t.remove(), 3200);
+}
+
+/* ─── INIT ───────────────────────────────────────────────────────────────── */
+
+loadLocal();
+render();
+ping().then(() => { if (serverOk) syncFromServer(); });
+setInterval(() => ping().then(() => { if (serverOk) syncFromServer(); }), 30000);
+</script>
+</body>
+</html>
