@@ -181,10 +181,12 @@ hist AS (
       AND a.low_sample  = 0
       AND a.total_amount > 0
     GROUP BY a.item_id, a.qlt, a.ptn, a.upgrade_level
-    HAVING weeks_covered >= 2
-       AND AVG(a.sales_per_day) <= {SALES_PER_DAY_CAP}
-       AND AVG(a.volatility) > 0.25
-),
+    HAVING weeks_covered >= 4
+    AND AVG(a.sales_per_day) >= {MIN_VIABLE_SPD}
+    AND SUM(CASE WHEN a.low_sample = 0 THEN 1 ELSE 0 END) >= 3
+    AND AVG(a.sales_per_day) <= {SALES_PER_DAY_CAP}
+    AND AVG(a.volatility) > 0.25
+   ),
 snap AS (
     SELECT * FROM lot_snapshots WHERE updated_at > (strftime('%s', 'now') - 3600)
 )
