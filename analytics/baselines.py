@@ -8,6 +8,7 @@ analytics/baselines.py
     recalculate_baselines(conn, granularities=None)
     apply_relative_volume(conn, granularities=None)
     get_best_slice(conn, item_id, granularity="daily") → dict | None
+    recalculate_liquidity_baselines(conn) → None
 """
 
 import sqlite3
@@ -25,6 +26,121 @@ log = api.utils.logger.get_logger(__name__)
 
 _BASELINE_GRANS      = frozenset({"window_weekday", "weekly", "monthly"})
 _MIN_ITEMS_BASELINE  = 3
+
+# Процентили для адаптивных порогов ликвидности
+_LIQ_BASELINE_SPD_LOW_PCT  = 15   # Percentile(15) → min_viable_spd
+_LIQ_BASELINE_SPD_HIGH_PCT = 90   # Percentile(90) → spd_cap
+_MIN_ITEMS_LIQ_BASELINE    = 5    # минимум предметов для расчёта per-category
+
+
+# ---------------------------------------------------------------------------
+# Вспомогательные функции
+# ---------------------------------------------------------------------------
+
+def _percentile(data: list[float], pct: int) -> float:
+    """
+    Линейная интерполяция percentile (аналог numpy percentile).
+
+    Args:
+        data: Отсортированный или неотсортированный список значений.
+        pct:  Процентиль от 0 до 100.
+
+    Returns:
+        Интерполированное значение.
+    """
+    if not data:
+        raise ValueError("Пустой список для percentile")
+    sorted_data = sorted(data)
+    n = len(sorted_data)
+    if n == 1:
+        return sorted_data[0]
+    rank = pct / 100.0 * (n - 1)
+    lower = int(rank)
+    upper = lower + 1
+    if upper >= n:
+        return sorted_data[-1]
+    frac = rank - lower
+    return sorted_data[lower] + frac * (sorted_data[upper] - sorted_data[lower])
+
+
+# ---------------------------------------------------------------------------
+# Ликвидностные базовые линии (per-category SPD пороги)
+# ---------------------------------------------------------------------------
+
+def recalculate_liquidity_baselines(conn: sqlite3.Connection) -> None:
+    """
+    Пересчитывает per-category пороги ликвидности на основе weekly аналитики.
+
+    Считает Percentile(15) и Percentile(90) по sales_per_day для каждой
+    категории (только строки без атрибутов: qlt=-1, ptn=-1, upgrade_level=-1,
+    low_sample=0) и записывает результат в таблицу liquidity_baselines.
+
+    Таблица создаётся автоматически при первом вызове (если не существует).
+
+    Использование в auto_select.py:
+        SELECT category, min_viable_spd, spd_cap
+        FROM liquidity_baselines
+        — для адаптивных порогов MIN_VIABLE_SPD и SALES_PER_DAY_CAP в SQL.
+
+    Вызывать после recalculate_baselines().
+    """
+
+    # Читаем avg(sales_per_day) per item per category из weekly-срезов.
+    # Берём AVG по неделям чтобы сгладить выбросы отдельных недель.
+    rows = conn.execute(
+        f"""
+        SELECT
+            i.category,
+            a.item_id,
+            AVG(a.sales_per_day) AS avg_spd
+        FROM analytics_summary AS a
+        JOIN items AS i ON i.item_id = a.item_id
+        WHERE a.granularity    = 'weekly'
+          AND a.low_sample     = 0
+          AND a.ptn            = {ATTR_SENTINEL}
+          AND a.upgrade_level  = {ATTR_SENTINEL}
+          AND a.sales_per_day  IS NOT NULL
+          AND a.sales_per_day  > 0
+        GROUP BY i.category, a.item_id
+        """
+    ).fetchall()
+
+    from collections import defaultdict
+    by_category: dict[str, list[float]] = defaultdict(list)
+    for row in rows:
+        by_category[row[0]].append(float(row[2]))
+
+    inserted = skipped = 0
+    for category, spd_list in by_category.items():
+        if len(spd_list) < _MIN_ITEMS_LIQ_BASELINE:
+            skipped += 1
+            log.debug(
+                "recalculate_liquidity_baselines: категория %r пропущена (%d предметов < %d).",
+                category, len(spd_list), _MIN_ITEMS_LIQ_BASELINE,
+            )
+            continue
+
+        min_viable_spd = _percentile(spd_list, _LIQ_BASELINE_SPD_LOW_PCT)
+        spd_cap        = _percentile(spd_list, _LIQ_BASELINE_SPD_HIGH_PCT)
+
+        # spd_cap не может быть ниже min_viable_spd (защита от вырожденных категорий)
+        spd_cap = max(spd_cap, min_viable_spd)
+
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO liquidity_baselines
+                (category, min_viable_spd, spd_cap, item_count, calculated_at)
+            VALUES (?, ?, ?, ?, strftime('%s', 'now'))
+            """,
+            (category, min_viable_spd, spd_cap, len(spd_list)),
+        )
+        inserted += 1
+
+    conn.commit()
+    log.info(
+        "recalculate_liquidity_baselines: %d категорий записано, %d пропущено (< %d предметов).",
+        inserted, skipped, _MIN_ITEMS_LIQ_BASELINE,
+    )
 
 
 # ---------------------------------------------------------------------------

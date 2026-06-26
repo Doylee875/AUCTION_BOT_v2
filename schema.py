@@ -279,5 +279,18 @@ def init_db(conn: sqlite3.Connection) -> None:
         )
     """)
 
+    # -----------------------------------------------------------------------
+    # liquidity_baselines — per-category пороги ликвидности
+    # -----------------------------------------------------------------------
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS liquidity_baselines (
+            category       TEXT    NOT NULL PRIMARY KEY,
+            min_viable_spd REAL    NOT NULL,
+            spd_cap        REAL    NOT NULL,
+            item_count     INTEGER NOT NULL,
+            calculated_at  INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        )
+    """)
+
     conn.commit()
     log.info("БД инициализирована.")

@@ -26,6 +26,7 @@ from analytics.baselines import (
     recalculate_baselines,
     apply_relative_volume,
     get_best_slice,
+    recalculate_liquidity_baselines,
 )
 
 # Приватные функции, использовавшиеся внутри старого монолита
@@ -43,4 +44,5 @@ __all__ = [
     "recalculate_baselines",
     "apply_relative_volume",
     "get_best_slice",
+    "recalculate_liquidity_baselines",
 ]

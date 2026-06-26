@@ -199,6 +199,9 @@ def compute_metrics(
     amount_mode   = _mode(amounts)
     spread_stable = 0   # заполняется отдельным проходом (auto_select)
 
+    sorted_amounts = sorted(amounts)
+    real_p50 = sorted_amounts[len(sorted_amounts) // 2]
+
     return {
         "liquidity":     liquidity,
         "sales_per_day": sales_per_day,
@@ -206,9 +209,9 @@ def compute_metrics(
         "volatility":    volatility,
         "trend":         trend,
         "total_amount":  total_amount,
-        "amount_p50":    bulk_threshold,
+        "amount_p50":    real_p50,          # ← реальная медиана (было: bulk_threshold)
         "price_single":  price_single,
-        "price_bulk":    price_bulk,
+        "price_bulk":    price_bulk,       
         "bulk_share":    bulk_share,
         "vol_single":    vol_single,
         "price_spread":  price_spread,

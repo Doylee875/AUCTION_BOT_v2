@@ -120,6 +120,15 @@ async def _run_main_pipeline(force_sync: bool, no_history: bool = False) -> None
             log.info("Шаги 2–3: загрузка истории продаж и пересчёт аналитики.")
             await _step_fetch_sales_and_analytics(conn, db_lock)
 
+        # Шаг 3.5: пересчёт per-category порогов ликвидности
+        # Выполняется всегда (в т.ч. при --no-history), т.к. шаг 4 зависит
+        # от таблицы liquidity_baselines.
+        log.info("Шаг 3.5: пересчёт liquidity_baselines.")
+        async with db_lock:
+            from analytics.baselines import recalculate_liquidity_baselines
+            recalculate_liquidity_baselines(conn)
+
+            
         # Шаг 4: автоотбор предметов
         log.info("Шаг 4: автоотбор предметов для мониторинга.")
         await _step_autoselect_watched(conn, db_lock)
