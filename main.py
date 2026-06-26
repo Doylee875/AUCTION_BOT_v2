@@ -59,38 +59,55 @@ async def _step_fetch_sales_and_analytics(conn, db_lock) -> None:
 async def _step_autoselect_watched(conn, db_lock) -> None:
     """Шаг 4: автоотбор предметов для мониторинга на основе аналитики.
 
-    Выбирает предметы с достаточной ликвидностью и объёмом продаж,
-    которых ещё нет в watched_items, и добавляет их туда.
+    Критерии отбора (по гранулярности 'daily', агрегат по последним 14 дням):
+      - AVG(liquidity)     >= autoselect_min_liquidity    (по умолчанию 0.5)
+      - AVG(sales_per_day) >= autoselect_min_sales_per_day (по умолчанию 1.0)
+      - Минимум 3 дня с данными (COUNT бакетов), чтобы не реагировать на выбросы
+      - low_sample = 0 во всех вошедших бакетах
+      - qlt = ptn = upgrade_level = -1 (агрегатная строка, не срез артефакта)
+
+    Почему 'daily':
+      Единственная гранулярность, где sales_per_day физически означает
+      «продаж за сутки». В weekly/monthly это «продаж за неделю/месяц»,
+      в window_weekday — «продаж за 4-часовое окно», что делало бы пороги
+      несопоставимыми. Гранулярности '30d' в БД не существует.
+
     Предметы из минус-листа (ignored_items) пропускаются.
     """
-    import sqlite3
     from watched_items import load_watched_item_ids, load_ignored_ids, save_watched_items
 
     log = get_logger(__name__ + ".autoselect")
 
     async with db_lock:
-        # Минимальные пороги отбора берём из конфига
-        min_liquidity: float = getattr(settings, "autoselect_min_liquidity", 0.3)
-        min_sales_per_day: float = getattr(settings, "autoselect_min_sales_per_day", 0.5)
+        min_liquidity: float = getattr(settings, "autoselect_min_liquidity", 0.5)
+        min_sales_per_day: float = getattr(settings, "autoselect_min_sales_per_day", 1.0)
+        min_days: int = getattr(settings, "autoselect_min_days", 3)
 
-        # Читаем кандидатов из аналитики
-        rows: list[sqlite3.Row] = conn.execute(
+        rows = conn.execute(
             """
-            SELECT DISTINCT item_id
+            SELECT item_id
             FROM analytics_summary
-            WHERE granularity = '30d'
-              AND liquidity  >= ?
-              AND sales_per_day >= ?
-              AND low_sample = 0
+            WHERE granularity    = 'daily'
+              AND qlt            = -1
+              AND ptn            = -1
+              AND upgrade_level  = -1
+              AND low_sample     = 0
+            GROUP BY item_id
+            HAVING COUNT(bucket_key)    >= ?
+               AND AVG(liquidity)       >= ?
+               AND AVG(sales_per_day)   >= ?
             """,
-            (min_liquidity, min_sales_per_day),
+            (min_days, min_liquidity, min_sales_per_day),
         ).fetchall()
 
         candidates: set[str] = {r[0] for r in rows}
 
+        log.info(
+            "Автоотбор: найдено %d кандидатов (daily, liquidity≥%.2f, sales/day≥%.2f, дней≥%d).",
+            len(candidates), min_liquidity, min_sales_per_day, min_days,
+        )
+
         if not candidates:
-            log.info("Автоотбор: кандидатов не найдено (пороги liquidity≥%.2f, sales/day≥%.2f).",
-                     min_liquidity, min_sales_per_day)
             return
 
         ignored: set[str] = load_ignored_ids(conn)
@@ -99,14 +116,15 @@ async def _step_autoselect_watched(conn, db_lock) -> None:
         new_items: set[str] = candidates - ignored - already_watched
 
         if not new_items:
-            log.info("Автоотбор: %d кандидатов, все уже отслеживаются.", len(candidates))
+            log.info("Автоотбор: все %d кандидатов уже отслеживаются.", len(candidates))
             return
 
-        # Добавляем новые + сохраняем уже существующие
         merged = already_watched | new_items
         added, _ = save_watched_items(conn, merged)
-        log.info("Автоотбор: добавлено %d новых предметов в мониторинг (из %d кандидатов).",
-                 added, len(candidates))
+        log.info(
+            "Автоотбор: добавлено %d новых предметов (из %d кандидатов, %d уже были).",
+            added, len(candidates), len(candidates) - len(new_items),
+        )
 
 
 async def _step_monitor_lots(conn, db_lock) -> None:
@@ -208,4 +226,5 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_known_args()[0]
+
     main(force=args.force, no_fetch=args.no_fetch)
