@@ -207,5 +207,5 @@ if __name__ == "__main__":
         help="Пропустить синхронизацию каталога (шаги 2–5 выполняются как обычно).",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_known_args()[0]
     main(force=args.force, no_fetch=args.no_fetch)
