@@ -84,7 +84,7 @@ class TelegramNotifier(Notifier):
         if not self._enabled:
             return
         message = self._format(alert)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None, partial(_send_sync, self.bot_token, self.chat_id, message)
         )

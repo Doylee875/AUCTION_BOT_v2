@@ -11,8 +11,10 @@ main.py
   5. Мониторинг активных лотов
 
 Аргументы:
-  --force     Принудительная синхронизация каталога, даже если уже была сегодня.
-  --no-fetch  Пропустить синхронизацию каталога (шаги 2–5 выполняются как обычно).
+  --force       Принудительная синхронизация каталога, даже если уже была сегодня.
+  --no-fetch    Пропустить синхронизацию каталога (шаги 2–5 выполняются как обычно).
+  --no-history  Пропустить загрузку истории продаж и пересчёт аналитики (шаги 2–3),
+                сразу перейти к автоотбору (шаг 4) и мониторингу (шаг 5).
 """
 
 from __future__ import annotations
@@ -57,73 +59,27 @@ async def _step_fetch_sales_and_analytics(conn, db_lock) -> None:
 
 
 async def _step_autoselect_watched(conn, db_lock) -> None:
-    """Шаг 4: автоотбор предметов для мониторинга на основе аналитики.
+    """Шаг 4: автоотбор предметов для мониторинга на основе арбитражного скоринга.
 
-    Критерии отбора (по гранулярности 'daily', агрегат по последним 14 дням):
-      - AVG(liquidity)     >= autoselect_min_liquidity    (по умолчанию 0.5)
-      - AVG(sales_per_day) >= autoselect_min_sales_per_day (по умолчанию 1.0)
-      - Минимум 3 дня с данными (COUNT бакетов), чтобы не реагировать на выбросы
-      - low_sample = 0 во всех вошедших бакетах
-      - qlt = ptn = upgrade_level = -1 (агрегатная строка, не срез артефакта)
-
-    Почему 'daily':
-      Единственная гранулярность, где sales_per_day физически означает
-      «продаж за сутки». В weekly/monthly это «продаж за неделю/месяц»,
-      в window_weekday — «продаж за 4-часовое окно», что делало бы пороги
-      несопоставимыми. Гранулярности '30d' в БД не существует.
-
-    Предметы из минус-листа (ignored_items) пропускаются.
+    Делегирует всю логику отбора и скоринга в analytics.auto_select.
+    Полностью перезаписывает watched_items по результатам каждого прогона.
     """
-    from watched_items import load_watched_item_ids, load_ignored_ids, save_watched_items
+    from analytics.auto_select import find_candidates, sync_candidates_to_watched
 
     log = get_logger(__name__ + ".autoselect")
 
     async with db_lock:
-        min_liquidity: float = getattr(settings, "autoselect_min_liquidity", 0.5)
-        min_sales_per_day: float = getattr(settings, "autoselect_min_sales_per_day", 1.0)
-        min_days: int = getattr(settings, "autoselect_min_days", 3)
-
-        rows = conn.execute(
-            """
-            SELECT item_id
-            FROM analytics_summary
-            WHERE granularity    = 'daily'
-              AND qlt            = -1
-              AND ptn            = -1
-              AND upgrade_level  = -1
-              AND low_sample     = 0
-            GROUP BY item_id
-            HAVING COUNT(bucket_key)    >= ?
-               AND AVG(liquidity)       >= ?
-               AND AVG(sales_per_day)   >= ?
-            """,
-            (min_days, min_liquidity, min_sales_per_day),
-        ).fetchall()
-
-        candidates: set[str] = {r[0] for r in rows}
-
-        log.info(
-            "Автоотбор: найдено %d кандидатов (daily, liquidity≥%.2f, sales/day≥%.2f, дней≥%d).",
-            len(candidates), min_liquidity, min_sales_per_day, min_days,
-        )
+        candidates = find_candidates(conn)
+        log.info("Автоотбор: найдено %d кандидатов после скоринга.", len(candidates))
 
         if not candidates:
+            log.warning("Автоотбор: нет кандидатов, watched_items не изменён.")
             return
 
-        ignored: set[str] = load_ignored_ids(conn)
-        already_watched: set[str] = load_watched_item_ids(conn)
-
-        new_items: set[str] = candidates - ignored - already_watched
-
-        if not new_items:
-            log.info("Автоотбор: все %d кандидатов уже отслеживаются.", len(candidates))
-            return
-
-        merged = already_watched | new_items
-        added, _ = save_watched_items(conn, merged)
+        added, total = sync_candidates_to_watched(conn, candidates)
         log.info(
-            "Автоотбор: добавлено %d новых предметов (из %d кандидатов, %d уже были).",
-            added, len(candidates), len(candidates) - len(new_items),
+            "Автоотбор: watched_items перезаписан — %d предметов (%d новых).",
+            total, added,
         )
 
 
@@ -138,11 +94,16 @@ async def _step_monitor_lots(conn, db_lock) -> None:
 # Основной async-сценарий (шаги 2–5 в одном event-loop)
 # ---------------------------------------------------------------------------
 
-async def _run_main_pipeline(force_sync: bool) -> None:
+async def _run_main_pipeline(force_sync: bool, no_history: bool = False) -> None:
     """Выполняет шаги 2–5 с общим соединением и db_lock.
 
     Все пишущие корутины сериализованы через asyncio.Lock, что устраняет
     гонки WAL-чекпоинта при одновременном conn.commit() из одного Connection.
+
+    Args:
+        force_sync:  Признак принудительной синхронизации (передаётся для контекста).
+        no_history:  Пропустить шаги 2–3 (загрузка истории + аналитика),
+                     сразу перейти к автоотбору (шаг 4).
     """
     from db.connection import open_connection
 
@@ -153,8 +114,11 @@ async def _run_main_pipeline(force_sync: bool) -> None:
 
     try:
         # Шаги 2–3: продажи + аналитика
-        log.info("Шаги 2–3: загрузка истории продаж и пересчёт аналитики.")
-        await _step_fetch_sales_and_analytics(conn, db_lock)
+        if no_history:
+            log.info("Шаги 2–3: пропущены (--no-history).")
+        else:
+            log.info("Шаги 2–3: загрузка истории продаж и пересчёт аналитики.")
+            await _step_fetch_sales_and_analytics(conn, db_lock)
 
         # Шаг 4: автоотбор предметов
         log.info("Шаг 4: автоотбор предметов для мониторинга.")
@@ -172,12 +136,13 @@ async def _run_main_pipeline(force_sync: bool) -> None:
 # Точка входа
 # ---------------------------------------------------------------------------
 
-def main(force: bool = False, no_fetch: bool = False) -> None:
+def main(force: bool = False, no_fetch: bool = False, no_history: bool = False) -> None:
     """Запускает бота по основному сценарию.
 
     Args:
-        force:    Принудительная синхронизация каталога.
-        no_fetch: Пропустить синхронизацию каталога (шаг 1).
+        force:      Принудительная синхронизация каталога.
+        no_fetch:   Пропустить синхронизацию каталога (шаг 1).
+        no_history: Пропустить загрузку истории продаж и пересчёт аналитики (шаги 2–3).
     """
     api.utils.logger.setup_logging(
         level=settings.log_level,
@@ -197,7 +162,7 @@ def main(force: bool = False, no_fetch: bool = False) -> None:
         _step_sync_db(force=force)
 
     # Шаги 2–5
-    asyncio.run(_run_main_pipeline(force_sync=force))
+    asyncio.run(_run_main_pipeline(force_sync=force, no_history=no_history))
 
 
 if __name__ == "__main__":
@@ -211,6 +176,11 @@ if __name__ == "__main__":
   3. Пересчёт аналитики
   4. Автоотбор предметов для мониторинга
   5. Мониторинг активных лотов
+
+Флаги:
+  --force       Принудительная синхронизация каталога.
+  --no-fetch    Пропустить шаг 1.
+  --no-history  Пропустить шаги 2–3, сразу перейти к шагу 4.
         """,
     )
     parser.add_argument(
@@ -224,7 +194,14 @@ if __name__ == "__main__":
         dest="no_fetch",
         help="Пропустить синхронизацию каталога (шаги 2–5 выполняются как обычно).",
     )
+    parser.add_argument(
+        "--no-history",
+        action="store_true",
+        dest="no_history",
+        help="Пропустить загрузку истории продаж и пересчёт аналитики (шаги 2–3), "
+             "сразу перейти к автоотбору (шаг 4) и мониторингу (шаг 5).",
+    )
 
     args = parser.parse_known_args()[0]
 
-    main(force=args.force, no_fetch=args.no_fetch)
+    main(force=args.force, no_fetch=args.no_fetch, no_history=args.no_history)

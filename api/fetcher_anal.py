@@ -265,6 +265,7 @@ async def fetch_all_price_histories(
         db_lock: Общий asyncio.Lock для сериализации записи в conn.
                  Если None — создаётся локальный лок (режим одиночного запуска).
     """
+    run_start = datetime.now(timezone.utc)
     rows = conn.execute(
         "SELECT item_id, fetch_total, fetch_time, fetch_offset, attr_type FROM items"
         " WHERE item_id NOT IN (SELECT item_id FROM ignored_items)"
@@ -300,15 +301,14 @@ async def fetch_all_price_histories(
     apply_relative_volume(conn)
     log.info("relative_volume обновлён.")
 
-    row = conn.execute(
-        "SELECT COUNT(*), MIN(fetch_time), MAX(fetch_time) FROM items WHERE fetch_time IS NOT NULL"
-    ).fetchone()
-    if row and row[1] and row[2]:
-        elapsed = row[2] - row[1]
-        log.info("Итог: обновлено %d позиций, заняло %d с (%dm %02ds).",
-                 row[0], elapsed, elapsed // 60, elapsed % 60)
-
-
+    count = conn.execute(
+            "SELECT COUNT(*) FROM items WHERE fetch_time IS NOT NULL"
+        ).fetchone()[0]
+    elapsed = int((datetime.now(timezone.utc) - run_start).total_seconds())
+    log.info(
+            "Итог: обновлено %d позиций, заняло %d с (%dm %02ds).",
+            count, elapsed, elapsed // 60, elapsed % 60,
+        )
 # ---------------------------------------------------------------------------
 # Точка входа
 # ---------------------------------------------------------------------------

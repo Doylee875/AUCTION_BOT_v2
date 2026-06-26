@@ -11,14 +11,14 @@ from enum import Enum
 
 import api.utils.logger
 from schema import ATTR_SENTINEL
-
+import math
 log = api.utils.logger.get_logger(__name__)
 
 # Настройки
 MIN_SPREAD_PCT: float = 5.0
-MAX_SALES_PER_WEEK: float = 3.5
-SALES_PER_DAY_CAP: float = MAX_SALES_PER_WEEK / 7.0
+SALES_PER_DAY_CAP: float = 30.0  # выше — расходники/топ без арбитражного потенциала
 TWO_WEEKS_SEC: int = 14 * 86400
+MIN_VIABLE_SPD: float = 2.0      # ниже — штраф за неликвидность
 
 # ---------------------------------------------------------------------------
 # Типы
@@ -47,6 +47,7 @@ class Candidate:
     # Данные для скоринга и UI
     price_spread:    float = 0.0
     avg_spd:         float = 0.0
+    weeks_covered:   int   = 0
     s1_demand_ratio: float | None = None  # Только для S1
     min_lot_price:   float | None = None  # Для M_TEMPORAL
     supply_ratio:    float | None = None  # Для M_SUPPLY_SHOCK (текущие лоты / исторические продажи)
@@ -124,13 +125,16 @@ def _score_candidate(c: Candidate) -> float:
 
     # Ликвидность (до +30)
     spd = c.avg_spd
-    if spd <= 0.05:
-        liq_score = 0.0
-    elif spd <= SALES_PER_DAY_CAP:
-        liq_score = 30.0 * (spd / SALES_PER_DAY_CAP)
-    else:
-        return 0.0  # слишком ликвидный — gate пропустил, явно исключаем
 
+    if spd < MIN_VIABLE_SPD:
+        # Штраф: чем ниже спрос — тем сильнее срезаем итоговый скор
+        liq_score = -20.0 * (1.0 - spd / MIN_VIABLE_SPD)
+    elif spd <= SALES_PER_DAY_CAP:
+        # Логарифм: рост быстрый в начале, плавный ближе к cap
+        liq_score = 30.0 * math.log(1 + spd) / math.log(1 + SALES_PER_DAY_CAP)
+    else:
+        return 0.0
+    
     # Специфичные штрафы/бонусы S1
     strategy_bonus = 0.0
     if c.base_strategy == BaseStrategy.S1_BULK_ASM and c.s1_demand_ratio is not None:
@@ -142,10 +146,16 @@ def _score_candidate(c: Candidate) -> float:
     raw = base_score + liq_score + strategy_bonus
 
     # Бонусы модификаторов
-    if Modifier.M_TEMPORAL    in c.modifiers: raw += 15.0
-    if Modifier.M_SUPPLY_SHOCK in c.modifiers: raw += 20.0
-    if Modifier.M_LADDER       in c.modifiers: raw += 10.0
+    if Modifier.M_TEMPORAL    in c.modifiers:
+        raw += 15.0
+    if Modifier.M_SUPPLY_SHOCK in c.modifiers:
+        raw += 20.0
+    if Modifier.M_LADDER       in c.modifiers:
+        raw += 10.0
 
+
+    if c.weeks_covered < 3:
+        raw *= 0.7   # -30% за недостаточную историю
     return round(max(0.0, min(100.0, raw)), 1)
 
 # ---------------------------------------------------------------------------
@@ -173,6 +183,7 @@ hist AS (
     GROUP BY a.item_id, a.qlt, a.ptn, a.upgrade_level
     HAVING weeks_covered >= 2
        AND AVG(a.sales_per_day) <= {SALES_PER_DAY_CAP}
+       AND AVG(a.volatility) > 0.25
 ),
 snap AS (
     SELECT * FROM lot_snapshots WHERE updated_at > (strftime('%s', 'now') - 3600)
@@ -180,6 +191,7 @@ snap AS (
 SELECT
     h.item_id, COALESCE(i.name_ru, h.item_id) AS name_ru, i.category, i.attr_type,
     h.qlt, h.ptn, h.upgrade_level,
+    h.weeks_covered,
     h.price_single, h.price_bulk, h.price_spread,
     h.amount_p50, h.amount_mode, h.bulk_share, h.volatility, h.avg_spd,
     s.total_lots, s.bulk_lots, s.min_price_pu
@@ -188,10 +200,15 @@ JOIN items i ON i.item_id = h.item_id
 LEFT JOIN snap s ON s.item_id = h.item_id AND s.qlt = h.qlt AND s.ptn = h.ptn
 WHERE
     i.last_sale_at > (strftime('%s', 'now') - {TWO_WEEKS_SEC})
+    AND i.category NOT IN ('bullet')
+    AND (
+        h.price_spread IS NOT NULL
+        OR i.attr_type != 'none'
+    )
     AND h.price_single IS NOT NULL AND h.price_bulk IS NOT NULL AND h.price_bulk > 0
     AND h.item_id NOT IN (SELECT item_id FROM ignored_items)
 ORDER BY ABS(h.price_spread) DESC
-LIMIT 100
+
 """
 
 # ---------------------------------------------------------------------------
@@ -199,13 +216,19 @@ LIMIT 100
 # ---------------------------------------------------------------------------
 
 def find_candidates(conn: sqlite3.Connection) -> list[Candidate]:
-    rows = conn.execute(_GET_CANDIDATES_SQL).fetchall()
+    original_factory = conn.row_factory
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(_GET_CANDIDATES_SQL).fetchall()
+    finally:
+        conn.row_factory = original_factory
     candidates = []
 
     for r in rows:
         spread = r["price_spread"] or 0.0
         c = Candidate(
             item_id=r["item_id"], name_ru=r["name_ru"], category=r["category"],
+            weeks_covered=r["weeks_covered"],
             attr_type=r["attr_type"], qlt=r["qlt"], ptn=r["ptn"],
             upgrade_level=r["upgrade_level"],
             price_spread=spread, avg_spd=r["avg_spd"] or 0.0,
@@ -235,22 +258,63 @@ def find_candidates(conn: sqlite3.Connection) -> list[Candidate]:
 
 
 def sync_candidates_to_watched(
-    conn: sqlite3.Connection, candidates: list[Candidate], limit: int = 50
-) -> int:
-    """Добавляет топ-кандидатов в watched_items, если их там нет."""
-    added = 0
-    for c in candidates[:limit]:
-        try:
-            conn.execute(
+    conn: sqlite3.Connection,
+    candidates: list[Candidate],
+) -> tuple[int, int]:
+    """Полностью перезаписывает watched_items списком кандидатов.
+
+    Удаляет предметы, которые не прошли скоринг в этом прогоне.
+    Добавляет новые. Предметы из ignored_items пропускаются автоматически
+    (они не попадают в candidates через SQL-запрос).
+
+    Args:
+        conn:       Соединение с БД.
+        candidates: Отсортированный по score список кандидатов.
+
+    Returns:
+        (added, total) — новых предметов и итоговый размер watched_items.
+    """
+    # Текущее состояние watched_items
+    existing: set[tuple] = {
+        (r[0], r[1], r[2], r[3])
+        for r in conn.execute(
+            "SELECT item_id, qlt, ptn, upgrade_level FROM watched_items"
+        ).fetchall()
+    }
+
+    # Новый желаемый список
+    incoming: list[tuple] = [
+        (c.item_id, c.qlt, c.ptn, c.upgrade_level)
+        for c in candidates
+    ]
+    incoming_set: set[tuple] = set(incoming)
+
+    to_add    = incoming_set - existing
+    to_remove = existing - incoming_set
+
+    cur = conn.cursor()
+
+    for item_id, qlt, ptn, upgrade_level in to_remove:
+        cur.execute(
+            "DELETE FROM watched_items WHERE item_id=? AND qlt=? AND ptn=? AND upgrade_level=?",
+            (item_id, qlt, ptn, upgrade_level),
+        )
+        log.info("Автоотбор: -%s [%s/%s/%s] исключён.", item_id, qlt, ptn, upgrade_level)
+
+    for c in candidates:
+        key = (c.item_id, c.qlt, c.ptn, c.upgrade_level)
+        if key in to_add:
+            cur.execute(
                 "INSERT OR IGNORE INTO watched_items (item_id, qlt, ptn, upgrade_level)"
                 " VALUES (?, ?, ?, ?)",
-                (c.item_id, c.qlt, c.ptn, c.upgrade_level),
+                key,
             )
-            if conn.execute("SELECT changes()").fetchone()[0] > 0:
-                added += 1
-                log.info("Автоотбор: +%s [%s] score=%.1f (%s)", c.name_ru, c.item_id, c.score, c.tag)
-        except Exception as e:
-            log.error("Ошибка добавления кандидата %s: %s", c.item_id, e)
-    if added:
-        conn.commit()
-    return added
+            log.info(
+                "Автоотбор: +%s [%s] score=%.1f (%s)",
+                c.name_ru, c.item_id, c.score, c.tag,
+            )
+
+    conn.commit()
+
+    total = conn.execute("SELECT COUNT(*) FROM watched_items").fetchone()[0]
+    return len(to_add), total

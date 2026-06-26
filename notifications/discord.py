@@ -64,7 +64,7 @@ class DiscordNotifier(Notifier):
         if not self._enabled:
             return
         payload = self._build_payload(alert)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None, partial(_send_sync, self.webhook_url, payload)
         )
