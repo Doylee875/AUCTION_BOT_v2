@@ -16,7 +16,7 @@ import api.utils.logger
 from api.github_client import make_session, download_repo_zip, iter_item_files_from_zip
 from db.connection import get_connection
 from schema import init_db
-from db.catalog import upsert_item, log_sync, INSERTED, UPDATED
+from catalog import upsert_item, log_sync, INSERTED, UPDATED
 
 # ---------------------------------------------------------------------------
 # Конфигурация
@@ -52,7 +52,7 @@ def fetch_all(session, conn: sqlite3.Connection) -> tuple[int, int]:
                 iter_item_files_from_zip(archive, REALMS):
 
             status = upsert_item(
-                conn, category, subcategory, repo_path, item_data,
+                conn, category, subcategory, item_data,
             )
 
             if status == INSERTED:

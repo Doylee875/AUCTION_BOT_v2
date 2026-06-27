@@ -21,10 +21,9 @@ import aiohttp
 from aiolimiter import AsyncLimiter
 from cachetools import TTLCache
 
-import api.auth
 from api.utils.exceptions import NetworkError, RateLimitError, raise_for_status
 from api.utils.logger import get_logger
-from config import Settings
+from config import settings
 
 logger = get_logger(__name__)
 
@@ -47,10 +46,10 @@ class StalcraftClient:
         data = await client.get("/EU/emission")
         await client.close()
     """
-
-    TokenGetter: api.auth.OAuthClient = field(default_factory=api.auth.OAuthClient)
-    cfg: Settings = field(default_factory=Settings)
-    name: str = ""
+    key_pair: tuple[str, str] 
+    _token_get_headers : dict[str, str] = field(default=None, init = False, repr=False)
+    cfg = field(default_factory=settings)
+    name:str = ""
 
     # Опциональный in-memory GET-кэш (LRU + TTL). По умолчанию отключён.
     cache_enabled: bool = False
@@ -72,6 +71,8 @@ class StalcraftClient:
             self.cfg.base_url,
             self.cfg.region,
         )
+        self._token_get_headers = self._build_token_headers()
+
 
     # ------------------------------------------------------------------
     # Управление жизненным циклом
@@ -117,7 +118,9 @@ class StalcraftClient:
     # ------------------------------------------------------------------
     # Вспомогательные методы
     # ------------------------------------------------------------------
-
+    
+    
+    
     def _ensure_open(self) -> aiohttp.ClientSession:
         """Проверяет что сессия открыта и возвращает её."""
         if self._session is None:
@@ -126,8 +129,8 @@ class StalcraftClient:
             )
         return self._session
 
-    async def _build_headers(self) -> dict[str, str]:
-        auth_headers = await self.TokenGetter.get_valid_token()
+    def _build_headers(self) -> dict[str, str]:
+        auth_headers = self._build_token_headers(self)
         return {
             **auth_headers,
             "Accept": "application/json",
@@ -142,6 +145,16 @@ class StalcraftClient:
         предмета (qlt, ptn, upgrade_level), что ломает логику парсинга.
         """
         return {**(params or {}), **_ADDITIONAL_PARAM}
+
+
+    def _build_token_headers(self) -> dict[str, str]:
+        """Возвращает заголовки для Secret Based Authentication."""
+        client_id, client_secret = self.key_pair
+        return {
+            "Client-Id": client_id,
+            "Client-Secret": client_secret,
+        }
+
 
     # ------------------------------------------------------------------
     # Ядро: выполнение запроса с retry-логикой
@@ -166,7 +179,7 @@ class StalcraftClient:
         При сетевых ошибках применяет линейный backoff (retry_delay × attempt).
         """
         session = self._ensure_open()
-        headers = await self._build_headers()
+        headers = self._build_headers()
         merged_params = self._build_params(params)
         label = self.name or "default"
         is_get = method.upper() == "GET"

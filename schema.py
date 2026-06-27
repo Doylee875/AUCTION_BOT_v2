@@ -3,15 +3,6 @@ schema.py
 =========
 Единая схема базы данных. Единственное место, где описаны таблицы и индексы.
 
-Принципы схемы:
-  - Один тип продажи — одна таблица атрибутов (sale_attrs).
-  - Тип атрибутов предмета зафиксирован в items.attr_type.
-  - Состояние загрузки истории хранится в items (fetch_*).
-  - Аналитика — одна таблица analytics_summary для всех типов.
-    Для обычных предметов qlt=ptn=upgrade_level=-1 (sentinel «не применимо»).
-    Sentinel -1 вместо NULL в PK: SQLite NULL != NULL, INSERT OR REPLACE
-    с NULL в PK тихо создаёт дубли, а -1 работает корректно.
-
 Константы ATTR_TYPE_* используются везде вместо магических строк.
 """
 
@@ -21,17 +12,17 @@ import api.utils.logger
 
 log = api.utils.logger.get_logger(__name__)
 
-# ---------------------------------------------------------------------------
-# Константы типов атрибутов
-# ---------------------------------------------------------------------------
+# # ---------------------------------------------------------------------------
+# # Константы типов атрибутов
+# # ---------------------------------------------------------------------------
 
-ATTR_TYPE_NONE     = "none"      # обычный предмет, нет доп. атрибутов
-ATTR_TYPE_ARTIFACT = "artifact"  # qlt + ptn
-ATTR_TYPE_UPGRADE  = "upgrade"   # upgrade_level
-ATTR_TYPE_QLT_ONLY = "qlt_only"  # только qlt (ядра модулей и т.п.)
+# ATTR_TYPE_NONE     = "none"      # обычный предмет, нет доп. атрибутов
+# ATTR_TYPE_ARTIFACT = "artifact"  # qlt + ptn
+# ATTR_TYPE_UPGRADE  = "upgrade"   # upgrade_level
+# ATTR_TYPE_QLT_ONLY = "qlt_only"  # только qlt (ядра модулей и т.п.)
 
-# Sentinel: «атрибут не применим» — используется в PK analytics_summary
-ATTR_SENTINEL = -1
+# # Sentinel: «атрибут не применим» — используется в PK analytics_summary
+# ATTR_SENTINEL = -1
 
 
 # ---------------------------------------------------------------------------
@@ -56,8 +47,6 @@ def init_db(conn: sqlite3.Connection) -> None:
             item_id         TEXT    NOT NULL PRIMARY KEY,
             category        TEXT    NOT NULL,
             subcategory     TEXT    NOT NULL DEFAULT '',
-            -- Тип атрибутов: 'none' | 'artifact' | 'upgrade' | 'qlt_only'
-            attr_type       TEXT    NOT NULL DEFAULT 'none',
             color           TEXT,
             name_ru         TEXT,
             name_en         TEXT,
@@ -68,15 +57,13 @@ def init_db(conn: sqlite3.Connection) -> None:
             -- Состояние загрузки истории продаж
             fetch_total     INTEGER NOT NULL DEFAULT 0,
             fetch_time      INTEGER,
-            fetch_offset    INTEGER NOT NULL DEFAULT 0,
-            last_sale_at    INTEGER
+            fetch_offset    INTEGER NOT NULL DEFAULT 0
         )
     """)
 
     cur.execute("CREATE INDEX IF NOT EXISTS idx_items_category    ON items (category)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_items_subcategory ON items (subcategory)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_items_color       ON items (color)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_items_attr_type   ON items (attr_type)")
 
     # Мультиязычные имена для поиска
     cur.execute("""
@@ -96,7 +83,6 @@ def init_db(conn: sqlite3.Connection) -> None:
             item_id     TEXT    NOT NULL,
             category    TEXT    NOT NULL,
             subcategory TEXT    NOT NULL DEFAULT '',
-            attr_type   TEXT    NOT NULL DEFAULT 'none',
             color       TEXT,
             name_ru     TEXT,
             name_en     TEXT,
@@ -120,11 +106,8 @@ def init_db(conn: sqlite3.Connection) -> None:
     cur.execute("""
         CREATE TABLE IF NOT EXISTS watched_items (
             item_id       TEXT    NOT NULL,
-            qlt           INTEGER NOT NULL DEFAULT -1,
-            ptn           INTEGER NOT NULL DEFAULT -1,
-            upgrade_level INTEGER NOT NULL DEFAULT -1,
             added_at      INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-            PRIMARY KEY (item_id, qlt, ptn, upgrade_level)
+            PRIMARY KEY (item_id)
         )
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_watched_added   ON watched_items (added_at DESC)")
@@ -141,6 +124,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             amount         INTEGER NOT NULL,
             price_per_unit INTEGER GENERATED ALWAYS AS (price / amount) VIRTUAL,
             sold_at        INTEGER NOT NULL,
+            raw_json       TEXT,
+
 
             UNIQUE  (item_id, sold_at, price, amount),
             FOREIGN KEY (item_id) REFERENCES items (item_id)
@@ -154,143 +139,133 @@ def init_db(conn: sqlite3.Connection) -> None:
     # -----------------------------------------------------------------------
     # sale_attrs — единая таблица атрибутов для всех типов предметов
     # -----------------------------------------------------------------------
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS sale_attrs (
-            sale_id       INTEGER PRIMARY KEY,
-            qlt           INTEGER,
-            ptn           INTEGER CHECK (ptn IS NULL OR ptn BETWEEN 0 AND 15),
-            upgrade_level INTEGER CHECK (upgrade_level IS NULL OR upgrade_level BETWEEN 0 AND 15),
-            FOREIGN KEY (sale_id) REFERENCES sales (id) ON DELETE CASCADE
-        )
-    """)
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_sale_attrs_artifact
-        ON sale_attrs (qlt, ptn)
-        WHERE qlt IS NOT NULL AND ptn IS NOT NULL
-    """)
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_sale_attrs_upgrade
-        ON sale_attrs (upgrade_level)
-        WHERE upgrade_level IS NOT NULL
-    """)
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_sale_attrs_qlt_only
-        ON sale_attrs (qlt)
-        WHERE qlt IS NOT NULL AND ptn IS NULL
-    """)
+    #TODO:Заменяется на механизм создания таблиц по каждому атрибуту, связи записей в таблице атрибутов по id продажи.
+    # cur.execute("""
+    #     CREATE TABLE IF NOT EXISTS sale_attrs (
+    #         sale_id       INTEGER PRIMARY KEY,
+    #         qlt           INTEGER,
+    #         ptn           INTEGER CHECK (ptn IS NULL OR ptn BETWEEN 0 AND 15),
+    #         upgrade_level INTEGER CHECK (upgrade_level IS NULL OR upgrade_level BETWEEN 0 AND 15),
+    #         FOREIGN KEY (sale_id) REFERENCES sales (id) ON DELETE CASCADE
+    #     )
+    # """)
+    # cur.execute("""
+    #     CREATE INDEX IF NOT EXISTS idx_sale_attrs_artifact
+    #     ON sale_attrs (qlt, ptn)
+    #     WHERE qlt IS NOT NULL AND ptn IS NOT NULL
+    # """)
+    # cur.execute("""
+    #     CREATE INDEX IF NOT EXISTS idx_sale_attrs_upgrade
+    #     ON sale_attrs (upgrade_level)
+    #     WHERE upgrade_level IS NOT NULL
+    # """)
+    # cur.execute("""
+    #     CREATE INDEX IF NOT EXISTS idx_sale_attrs_qlt_only
+    #     ON sale_attrs (qlt)
+    #     WHERE qlt IS NOT NULL AND ptn IS NULL
+    # """)
 
     # -----------------------------------------------------------------------
     # analytics_summary — единая таблица аналитики для всех типов
     # -----------------------------------------------------------------------
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS analytics_summary (
-            item_id       TEXT    NOT NULL,
-            granularity   TEXT    NOT NULL,
-            bucket_key    TEXT    NOT NULL,
-            qlt           INTEGER NOT NULL DEFAULT -1,
-            ptn           INTEGER NOT NULL DEFAULT -1,
-            upgrade_level INTEGER NOT NULL DEFAULT -1,
+    #TODO:Потом
+    # cur.execute("""
+    #     CREATE TABLE IF NOT EXISTS analytics_summary (
+    #         item_id       TEXT    NOT NULL,
+    #         granularity   TEXT    NOT NULL,
+    #         bucket_key    TEXT    NOT NULL,
+    #         qlt           INTEGER NOT NULL DEFAULT -1,
+    #         ptn           INTEGER NOT NULL DEFAULT -1,
+    #         upgrade_level INTEGER NOT NULL DEFAULT -1,
 
-            liquidity     REAL,
-            sales_per_day REAL,
-            avg_price     REAL,
-            volatility    REAL,
-            trend         REAL,
-            total_amount  INTEGER,
+    #         liquidity     REAL,
+    #         sales_per_day REAL,
+    #         avg_price     REAL,
+    #         volatility    REAL,
+    #         trend         REAL,
+    #         total_amount  INTEGER,
 
-            amount_p50    INTEGER,
-            price_single  REAL,
-            price_bulk    REAL,
-            bulk_share    REAL,
-            vol_single    REAL,
+    #         amount_p50    INTEGER,
+    #         price_single  REAL,
+    #         price_bulk    REAL,
+    #         bulk_share    REAL,
+    #         vol_single    REAL,
 
-            price_spread  REAL,
-            amount_mode   INTEGER,
-            spread_stable INTEGER NOT NULL DEFAULT 0,
+    #         price_spread  REAL,
+    #         amount_mode   INTEGER,
+    #         spread_stable INTEGER NOT NULL DEFAULT 0,
 
-            relative_volume REAL,
+    #         relative_volume REAL,
 
-            low_sample    INTEGER NOT NULL DEFAULT 0,
-            calculated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+    #         low_sample    INTEGER NOT NULL DEFAULT 0,
+    #         calculated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
 
-            PRIMARY KEY (item_id, granularity, bucket_key, qlt, ptn, upgrade_level)
-        )
-    """)
+    #         PRIMARY KEY (item_id, granularity, bucket_key, qlt, ptn, upgrade_level)
+    #     )
+    # """)
 
     # -----------------------------------------------------------------------
-    # lot_snapshots — актуальное состояние лотов
+    # lots — актуальное состояние лотов
     # -----------------------------------------------------------------------
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS lot_snapshots (
-            item_id       TEXT    NOT NULL,
-            qlt           INTEGER NOT NULL DEFAULT -1,
-            ptn           INTEGER NOT NULL DEFAULT -1,
-            upgrade_level INTEGER NOT NULL DEFAULT -1,
+    #TODO:Вообще в бд затаскивать активные лоты не стоит
+    # cur.execute("""
+    #     CREATE TABLE IF NOT EXISTS lots (
+    #         item_id       TEXT    NOT NULL,
 
-            total_lots    INTEGER NOT NULL DEFAULT 0,
-            total_amount  INTEGER NOT NULL DEFAULT 0,
-            single_lots   INTEGER NOT NULL DEFAULT 0,
-            single_amount INTEGER NOT NULL DEFAULT 0,
-            bulk_lots     INTEGER NOT NULL DEFAULT 0,
-            bulk_amount   INTEGER NOT NULL DEFAULT 0,
+    #         id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    #         item_id        TEXT    NOT NULL,
+    #         price          INTEGER NOT NULL,
+    #         amount         INTEGER NOT NULL,
+    #         price_per_unit INTEGER GENERATED ALWAYS AS (price / amount) VIRTUAL,
+    #         sold_at        INTEGER NOT NULL,
+    #         raw_json       TEXT,
 
-            min_price_pu  REAL,
-            avg_price_pu  REAL,
 
-            updated_at    INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-            PRIMARY KEY (item_id, qlt, ptn, upgrade_level)
-        )
-    """)
-
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_analytics_item      ON analytics_summary (item_id)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_analytics_item_gran ON analytics_summary (item_id, granularity)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_analytics_slice     ON analytics_summary (item_id, granularity, bucket_key)")
-    # Индекс для UI: артефакты (ptn != -1) — наиболее частый запрос «лучшего среза»
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_analytics_ui_best
-        ON analytics_summary (item_id, granularity, qlt, ptn, upgrade_level)
-        WHERE ptn != -1
-    """)
+    #         updated_at    INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+    #         PRIMARY KEY (item_id, qlt, ptn, upgrade_level)
+    #     )
+    # """)
 
     # -----------------------------------------------------------------------
     # analytics_baselines — медианный объём по категориям
     # -----------------------------------------------------------------------
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS analytics_baselines (
-            granularity   TEXT    NOT NULL,
-            bucket_key    TEXT    NOT NULL,
-            category      TEXT    NOT NULL,
-            median_amount REAL    NOT NULL,
-            item_count    INTEGER NOT NULL,
-            calculated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-            PRIMARY KEY (granularity, bucket_key, category)
-        )
-    """)
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_baselines_gran_bucket
-        ON analytics_baselines (granularity, bucket_key)
-    """)
+    #TODO:Аналитика потом
+    # cur.execute("""
+    #     CREATE TABLE IF NOT EXISTS analytics_baselines (
+    #         granularity   TEXT    NOT NULL,
+    #         bucket_key    TEXT    NOT NULL,
+    #         category      TEXT    NOT NULL,
+    #         median_amount REAL    NOT NULL,
+    #         item_count    INTEGER NOT NULL,
+    #         calculated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+    #         PRIMARY KEY (granularity, bucket_key, category)
+    #     )
+    # """)
+    # cur.execute("""
+    #     CREATE INDEX IF NOT EXISTS idx_baselines_gran_bucket
+    #     ON analytics_baselines (granularity, bucket_key)
+    # """)
 
-    # Минус-лист: предметы, исключённые из загрузки истории продаж
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS ignored_items (
-            item_id  TEXT    NOT NULL PRIMARY KEY,
-            added_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-        )
-    """)
+    # # Минус-лист: предметы, исключённые из загрузки истории продаж
+    # cur.execute("""
+    #     CREATE TABLE IF NOT EXISTS ignored_items (
+    #         item_id  TEXT    NOT NULL PRIMARY KEY,
+    #         added_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+    #     )
+    # """)
 
-    # -----------------------------------------------------------------------
-    # liquidity_baselines — per-category пороги ликвидности
-    # -----------------------------------------------------------------------
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS liquidity_baselines (
-            category       TEXT    NOT NULL PRIMARY KEY,
-            min_viable_spd REAL    NOT NULL,
-            spd_cap        REAL    NOT NULL,
-            item_count     INTEGER NOT NULL,
-            calculated_at  INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-        )
-    """)
+    # # -----------------------------------------------------------------------
+    # # liquidity_baselines — per-category пороги ликвидности
+    # # -----------------------------------------------------------------------
+    # cur.execute("""
+    #     CREATE TABLE IF NOT EXISTS liquidity_baselines (
+    #         category       TEXT    NOT NULL PRIMARY KEY,
+    #         min_viable_spd REAL    NOT NULL,
+    #         spd_cap        REAL    NOT NULL,
+    #         item_count     INTEGER NOT NULL,
+    #         calculated_at  INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+    #     )
+    # """)
 
     conn.commit()
     log.info("БД инициализирована.")

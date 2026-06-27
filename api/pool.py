@@ -2,9 +2,8 @@
 
 from dataclasses import dataclass
 
-from api.auth import OAuthClient
 from api.client import StalcraftClient
-from config import Settings, settings
+from config import Settings
 
 
 @dataclass
@@ -24,18 +23,17 @@ class StalcraftClientPool:
 
 
 def build_pool(cfg: Settings | None = None) -> StalcraftClientPool:
-    cfg = cfg or settings
-    pairs = cfg.credential_pairs()[: cfg.parallel_clients]
+    pairs = cfg.credential_pairs()
     if not pairs:
         raise ValueError(
             "Не заданы OAuth-учётные данные: укажите CLIENT_ID и CLIENT_SECRET в .env"
         )
     clients = [
         StalcraftClient(
-            TokenGetter=OAuthClient(client_id=cid, client_secret=csec),
+            pair,
             cfg=cfg,
             name=str(i),
         )
-        for i, (cid, csec) in enumerate(pairs)
+        for i, pair in enumerate(pairs)
     ]
     return StalcraftClientPool(clients)

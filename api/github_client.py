@@ -23,7 +23,7 @@ from api.utils import logger
 # ---------------------------------------------------------------------------
 
 GITHUB_TOKEN: str = settings.github_token
-MAX_RETRIES: int  = settings.max_retries
+MAX_RETRIES: int  = 5
 
 GITHUB_API_BASE = "https://api.github.com"
 REPO            = "EXBO-Studio/stalcraft-database"
@@ -231,9 +231,6 @@ def iter_item_files_from_zip(
         realm, category, subcategory = parsed
 
         if realm not in realms_set:
-            continue
-
-        if settings.CATEGORIES_FILTER and category not in settings.CATEGORIES_FILTER:
             continue
 
         try:

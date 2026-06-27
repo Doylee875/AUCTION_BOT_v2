@@ -10,7 +10,6 @@ db/catalog.py
 import json
 import sqlite3
 
-from schema import ATTR_TYPE_NONE
 import api.utils.logger
 
 log = api.utils.logger.get_logger(__name__)
@@ -24,26 +23,20 @@ UNCHANGED = "unchanged"
 # Определение типа атрибутов из raw_json
 # ---------------------------------------------------------------------------
 
-def detect_attr_type(category: str, subcategory: str, item_id: str = "") -> str:
-    """
-    Определяет тип атрибутов предмета.
-
-    Приоритеты (первое совпадение выигрывает):
-      1. domain_rules.ATTR_TYPE_ITEM_LISTS — явный список item_id.
-      2. domain_rules.ATTR_TYPE_RULES — правила по (category, subcategory).
-
-    Returns:
-        Одна из констант ATTR_TYPE_*: 'none', 'artifact', 'upgrade', 'qlt_only'.
-    """
-    from domain_rules import ATTR_TYPE_ITEM_LISTS, ATTR_TYPE_RULES
-    if item_id:
-        for attr_type, item_ids in ATTR_TYPE_ITEM_LISTS.items():
-            if item_id in item_ids:
-                return attr_type
-    for rule_cat, rule_sub, attr_type in ATTR_TYPE_RULES:
-        if category == rule_cat and (rule_sub == "" or subcategory == rule_sub):
-            return attr_type
-    return ATTR_TYPE_NONE
+# def detect_attr_type(category: str, subcategory: str, item_id: str = "") -> str:
+#     """
+#     Определяет тип атрибутов предмета.
+#     TODO:Подлежит переработке.
+#     """
+#     from db.domain_rules import ATTR_TYPE_ITEM_LISTS, ATTR_TYPE_RULES
+#     if item_id:
+#         for attr_type, item_ids in ATTR_TYPE_ITEM_LISTS.items():
+#             if item_id in item_ids:
+#                 return attr_type
+#     for rule_cat, rule_sub, attr_type in ATTR_TYPE_RULES:
+#         if category == rule_cat and (rule_sub == "" or subcategory == rule_sub):
+#             return attr_type
+#     return ATTR_TYPE_NONE
 
 
 def _extract_names(item_data: dict) -> tuple[str, str]:
@@ -66,7 +59,6 @@ def upsert_item(
     conn: sqlite3.Connection,
     category: str,
     subcategory: str,
-    repo_path: str,
     item_data: dict,
 ) -> str:
     """
@@ -83,7 +75,6 @@ def upsert_item(
     name_ru, name_en = _extract_names(item_data)
     raw_json_str     = json.dumps(item_data, ensure_ascii=False)
     icon_path        = item_data.get("icon_path", "")
-    attr_type        = detect_attr_type(category, subcategory, item_id)
 
     cur = conn.cursor()
 
@@ -95,10 +86,10 @@ def upsert_item(
     if existing is None:
         cur.execute("""
             INSERT INTO items
-                (item_id, category, subcategory, attr_type,
+                (item_id, category, subcategory,
                  color, name_ru, name_en, raw_json, icon_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (item_id, category, subcategory, attr_type,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (item_id, category, subcategory,
               color, name_ru, name_en, raw_json_str, icon_path))
         status = INSERTED
 
@@ -117,7 +108,6 @@ def upsert_item(
             UPDATE items SET
                 category    = ?,
                 subcategory = ?,
-                attr_type   = ?,
                 color       = ?,
                 name_ru     = ?,
                 name_en     = ?,
@@ -125,18 +115,18 @@ def upsert_item(
                 icon_path   = ?,
                 updated_at  = strftime('%s', 'now')
             WHERE item_id = ?
-        """, (category, subcategory, attr_type,
+        """, (category, subcategory,
               color, name_ru, name_en, raw_json_str, icon_path,
               item_id))
         status = UPDATED
 
-    else:
-        # raw_json не изменился, attr_type пересчитывается (производный от category/subcategory)
-        cur.execute(
-            "UPDATE items SET attr_type = ? WHERE item_id = ?",
-            (attr_type, item_id),
-        )
-        status = UNCHANGED
+    # else:
+    #     # raw_json не изменился, attr_type пересчитывается (производный от category/subcategory)
+    #     cur.execute(
+    #         "UPDATE items SET attr_type = ? WHERE item_id = ?",
+    #         (attr_type, item_id),
+    #     )
+    #     status = UNCHANGED
 
     for lang, name in (("ru", name_ru), ("en", name_en)):
         if name:
