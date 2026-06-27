@@ -52,18 +52,32 @@ def init_db(conn: sqlite3.Connection) -> None:
             name_en         TEXT,
             raw_json        TEXT    NOT NULL,
             icon_path       TEXT,
-            updated_at      INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+            updated_at      INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
 
-            -- Состояние загрузки истории продаж
-            fetch_total     INTEGER NOT NULL DEFAULT 0,
-            fetch_time      INTEGER,
-            fetch_offset    INTEGER NOT NULL DEFAULT 0
         )
     """)
 
     cur.execute("CREATE INDEX IF NOT EXISTS idx_items_category    ON items (category)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_items_subcategory ON items (subcategory)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_items_color       ON items (color)")
+
+
+    # -----------------------------------------------------------------------
+    # fetch_state 
+    # -----------------------------------------------------------------------
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS fetch_state (
+        item_id        TEXT    NOT NULL PRIMARY KEY,
+        total_known    INTEGER,
+        fetched_offset INTEGER NOT NULL DEFAULT 0,
+        oldest_fetched INTEGER,
+        newest_fetched INTEGER,
+        last_run_at    INTEGER,
+        status         TEXT    NOT NULL DEFAULT 'pending'
+    )
+    """)
+
+
 
     # Мультиязычные имена для поиска
     cur.execute("""
@@ -126,7 +140,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             sold_at        INTEGER NOT NULL,
             raw_json       TEXT,
 
-
+                
             UNIQUE  (item_id, sold_at, price, amount),
             FOREIGN KEY (item_id) REFERENCES items (item_id)
         )
@@ -139,16 +153,12 @@ def init_db(conn: sqlite3.Connection) -> None:
     # -----------------------------------------------------------------------
     # sale_attrs — единая таблица атрибутов для всех типов предметов
     # -----------------------------------------------------------------------
-    #TODO:Заменяется на механизм создания таблиц по каждому атрибуту, связи записей в таблице атрибутов по id продажи.
-    # cur.execute("""
-    #     CREATE TABLE IF NOT EXISTS sale_attrs (
-    #         sale_id       INTEGER PRIMARY KEY,
-    #         qlt           INTEGER,
-    #         ptn           INTEGER CHECK (ptn IS NULL OR ptn BETWEEN 0 AND 15),
-    #         upgrade_level INTEGER CHECK (upgrade_level IS NULL OR upgrade_level BETWEEN 0 AND 15),
-    #         FOREIGN KEY (sale_id) REFERENCES sales (id) ON DELETE CASCADE
-    #     )
-    # """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS sale_attrs (
+        sale_id INTEGER PRIMARY KEY,
+        FOREIGN KEY (sale_id) REFERENCES sales (id) ON DELETE CASCADE
+    )
+    """)
     # cur.execute("""
     #     CREATE INDEX IF NOT EXISTS idx_sale_attrs_artifact
     #     ON sale_attrs (qlt, ptn)
@@ -246,14 +256,13 @@ def init_db(conn: sqlite3.Connection) -> None:
     #     ON analytics_baselines (granularity, bucket_key)
     # """)
 
-    # # Минус-лист: предметы, исключённые из загрузки истории продаж
-    # cur.execute("""
-    #     CREATE TABLE IF NOT EXISTS ignored_items (
-    #         item_id  TEXT    NOT NULL PRIMARY KEY,
-    #         added_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-    #     )
-    # """)
-
+    # Минус-лист: предметы, исключённые из загрузки истории продаж
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ignored_items (
+            item_id  TEXT    NOT NULL PRIMARY KEY,
+            added_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        )
+    """)
     # # -----------------------------------------------------------------------
     # # liquidity_baselines — per-category пороги ликвидности
     # # -----------------------------------------------------------------------

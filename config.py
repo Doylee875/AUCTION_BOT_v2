@@ -2,7 +2,7 @@
 config.py — Конфигурация приложения STALCRAFT API.
 
 Загружает параметры из переменных окружения (.env файл).
-Документация API: https://eapi.stalcraft.net
+Документация API: https://eapi.stalzone.net
 
 Переменные окружения:
     # --- API ---
@@ -61,22 +61,19 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-@dataclass
+
 class Region(str, Enum):
     RU = "RU"
     EU = "EU"
 
     @classmethod
     def from_str(cls, value: str) -> "Region":
-        """Парсит регион регистронезависимо; при ошибке даёт понятное сообщение."""
         try:
             return cls(value.upper())
         except ValueError:
             valid = ", ".join(r.value for r in cls)
-            raise ValueError(
-                f"Неверное значение REGION={value!r}. Допустимые: {valid}"
-            ) from None
-
+            raise ValueError(f"Неверное значение REGION={value!r}. Допустимые: {valid}") from None
+        
 
 def _parse_optional_float(env_key: str) -> float | None:
     """Возвращает float из env-переменной или None, если переменная не задана."""
@@ -89,8 +86,8 @@ class Settings:
     """Операционные настройки приложения из переменных окружения."""
 
     # --- API ---
-    base_url: str = "https://eapi.stalcraft.net"
-    region: Region = field(default_factory=Region.RU)
+    base_url: str = "https://eapi.stalzone.net"
+    region: Region = Region.RU
 
     # --- OAuth ---
     client_id: str = ""
@@ -165,7 +162,7 @@ class Settings:
                 object.__setattr__(d, f.name, f.default)
 
         return cls(
-            base_url=os.getenv("BASE_URL", "https://eapi.stalcraft.net"),
+            base_url=os.getenv("BASE_URL", "https://eapi.stalzone.net"),
             region=Region.from_str(os.getenv("REGION", Region.RU.value)),
             github_token=os.getenv("GITHUB_TOKEN", ""),
             client_id=os.getenv("CLIENT_ID", ""),

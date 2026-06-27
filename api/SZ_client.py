@@ -9,7 +9,7 @@ api/client.py — Асинхронный HTTP-клиент для STALCRAFT API.
 - Опционального LRU+TTL кэша GET-ответов
 - Rate-limiting через aiolimiter
 
-Документация: https://eapi.stalcraft.net
+Документация: https://eapi.stalzone.net
 """
 
 import asyncio
@@ -23,14 +23,16 @@ from cachetools import TTLCache
 
 from api.utils.exceptions import NetworkError, RateLimitError, raise_for_status
 from api.utils.logger import get_logger
-from config import settings
+from config import settings,Settings
 
 logger = get_logger(__name__)
 
 # Параметр, который STALCRAFT API требует для получения доп. атрибутов
 # (qlt, ptn, upgrade_level и т.д.). Добавляется ко всем запросам автоматически.
 _ADDITIONAL_PARAM: dict[str, str] = {"additional": "true"}
-
+REQUEST_TIMEOUT: int = 10
+REQUEST_DELAY:int = 10
+MAX_RETRIES: int = 5
 
 @dataclass(slots=True)
 class StalcraftClient:
@@ -48,7 +50,7 @@ class StalcraftClient:
     """
     key_pair: tuple[str, str] 
     _token_get_headers : dict[str, str] = field(default=None, init = False, repr=False)
-    cfg = field(default_factory=settings)
+    cfg: Settings = field(default_factory=settings)
     name:str = ""
 
     # Опциональный in-memory GET-кэш (LRU + TTL). По умолчанию отключён.
@@ -80,21 +82,18 @@ class StalcraftClient:
 
     async def open(self) -> None:
         """Открывает HTTP-сессию. Вызывается автоматически при `async with`."""
-        timeout = aiohttp.ClientTimeout(total=self.cfg.request_timeout)
+        timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
         self._session = aiohttp.ClientSession(
             base_url=self.cfg.base_url,
             timeout=timeout,
         )
-        self._semaphore = asyncio.Semaphore(self.cfg.parallel_clients)
+        self._semaphore = asyncio.Semaphore(len(self.cfg.credential_pairs()))
 
         if self.cache_enabled:
             self._cache = TTLCache(maxsize=self.cache_max_size, ttl=self.cache_ttl)
 
         # rate_limit_rps: приоритет — явная настройка, иначе вычисляем из request_delay
-        rps = (
-            self.cfg.rate_limit_rps
-            if self.cfg.rate_limit_rps is not None
-            else 1.0 / max(self.cfg.request_delay, 1e-6)
+        rps = (1.0 / max(REQUEST_DELAY, 1e-6)
         )
         if rps > 0:
             self._limiter = AsyncLimiter(int(max(1, round(rps))), time_period=1)
@@ -130,7 +129,7 @@ class StalcraftClient:
         return self._session
 
     def _build_headers(self) -> dict[str, str]:
-        auth_headers = self._build_token_headers(self)
+        auth_headers = self._token_get_headers
         return {
             **auth_headers,
             "Accept": "application/json",
@@ -198,7 +197,7 @@ class StalcraftClient:
         rate_guard = self._limiter if self._limiter is not None else self._fallback_lock
         last_exception: Exception | None = None
 
-        for attempt in range(1, self.cfg.max_retries + 1):
+        for attempt in range(1, MAX_RETRIES + 1):
             try:
                 async with rate_guard:
                     async with self._semaphore:  # type: ignore[union-attr]  # всегда задан после open()
@@ -227,9 +226,9 @@ class StalcraftClient:
                 delay = exc.retry_after if exc.retry_after is not None else self.cfg.retry_delay
                 logger.warning(
                     "Rate limit: client=%s попытка %d/%d %s %s, повтор через %.1fs",
-                    label, attempt, self.cfg.max_retries, method, path, delay,
+                    label, attempt, MAX_RETRIES, method, path, delay,
                 )
-                if attempt < self.cfg.max_retries:
+                if attempt < MAX_RETRIES:
                     await asyncio.sleep(delay)
                     continue
                 raise
@@ -243,13 +242,13 @@ class StalcraftClient:
                 last_exception = exc
                 logger.warning(
                     "Сетевая ошибка: client=%s попытка %d/%d %s %s: %s",
-                    label, attempt, self.cfg.max_retries, method, path, exc,
+                    label, attempt, MAX_RETRIES, method, path, exc,
                 )
-                if attempt < self.cfg.max_retries:
+                if attempt < MAX_RETRIES:
                     await asyncio.sleep(self.cfg.retry_delay * attempt)
 
         raise NetworkError(
-            message=f"Не удалось выполнить {method} {path} после {self.cfg.max_retries} попыток",
+            message=f"Не удалось выполнить {method} {path} после {MAX_RETRIES} попыток",
             response_body=str(last_exception),
         )
 

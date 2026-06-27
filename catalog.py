@@ -120,13 +120,8 @@ def upsert_item(
               item_id))
         status = UPDATED
 
-    # else:
-    #     # raw_json не изменился, attr_type пересчитывается (производный от category/subcategory)
-    #     cur.execute(
-    #         "UPDATE items SET attr_type = ? WHERE item_id = ?",
-    #         (attr_type, item_id),
-    #     )
-    #     status = UNCHANGED
+    else:
+        status = UNCHANGED
 
     for lang, name in (("ru", name_ru), ("en", name_en)):
         if name:

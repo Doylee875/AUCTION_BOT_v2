@@ -21,23 +21,24 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import threading
 
 import api.utils.logger
 from api.utils.logger import get_logger
+from api.fetcher_sales import fetch_all_sales
+from api.pool import build_pool
 from config import settings
 from analytics import calcul_anal
 
 # ---------------------------------------------------------------------------
-# Фоновые сервисы
+# Tracker server
 # ---------------------------------------------------------------------------
 
-def _start_tracker_server() -> None:
-    """Запускает tracker_server в фоновом daemon-потоке."""
-    from tracker_server import run_server
+# def _start_tracker_server() -> None:
+#     """Запускает tracker_server в фоновом daemon-потоке."""
+#     from tracker_server import run_server
 
-    t = threading.Thread(target=run_server, daemon=True, name="tracker-server")
-    t.start()
+#     t = threading.Thread(target=run_server, daemon=True, name="tracker-server")
+#     t.start()
 
 
 # ---------------------------------------------------------------------------
@@ -51,9 +52,11 @@ def _step_sync_db(force: bool) -> None:
     api.fetcher.run(force=force)
 
 
-async def _step_fetch_sales(conn, db_lock) -> None:
+async def _step_fetch_sales(conn, db_lock, pool) -> None:
     """Шаг 2: загрузка истории продаж."""
-    pass
+    #TODO
+    period_days = 5
+    await fetch_all_sales(conn, db_lock, pool, period_days=period_days)
     #TODO
 
 
@@ -82,44 +85,39 @@ async def _step_monitor_lots(conn, db_lock) -> None:
 # ---------------------------------------------------------------------------
 
 async def _run_main_pipeline(force_sync: bool, no_history: bool = False) -> None:
-    """Выполняет шаги 2–4 с общим соединением и db_lock.
-
-    Все пишущие корутины сериализованы через asyncio.Lock, что устраняет
-    гонки WAL-чекпоинта при одновременном conn.commit() из одного Connection.
-
-    Args:
-        force_sync:  Признак принудительной синхронизации (передаётся для контекста).
-        no_history:  Пропустить шаги 2–3 (загрузка истории + аналитика),
-                     сразу перейти к автоотбору (шаг 4).
-    """
+    """    """
     from db.connection import open_connection
 
     db_lock = asyncio.Lock()
     conn = open_connection(settings.db_path)
+    pool = build_pool(settings)
 
     log = get_logger(__name__)
 
     try:
+        await pool.open()
+
         # Шаг 2: продажи
         if no_history:
             log.info("Шаг 2: пропущен (--no-history).")
         else:
             log.info("Шаг 2: загрузка истории продаж")
-            await _step_fetch_sales(conn, db_lock)
+            await _step_fetch_sales(conn, db_lock, pool)
 
         # Шаг 3: анализ продаж
         log.info("Шаг 3: анализ продаж")
-        await _step_anal_calc(conn, db_lock,force_sync)    
-            
+        await _step_anal_calc(conn, db_lock, force_sync)
+
         # Шаг 4: автоотбор предметов
         log.info("Шаг 4: автоотбор предметов для мониторинга.")
         await _step_autoselect_watched(conn, db_lock)
 
-        # # Шаг 5: мониторинг лотов (работает в цикле)
+        # Шаг 5: мониторинг лотов (работает в цикле)
         log.info("Шаг 5: запуск мониторинга активных лотов.")
         await _step_monitor_lots(conn, db_lock)
 
     finally:
+        await pool.close()
         conn.close()
 
 

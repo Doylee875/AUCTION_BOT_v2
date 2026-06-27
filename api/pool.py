@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from api.client import StalcraftClient
+from api.SZ_client import StalcraftClient
 from config import Settings
 
 
